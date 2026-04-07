@@ -1,0 +1,62 @@
+# ═══════════════════════════════════════════════
+# Deploy to GitHub Pages
+#
+# Triggers on every push to main.
+# Injects Supabase credentials from repository secrets,
+# then deploys the static site to GitHub Pages.
+#
+# Required repository secrets (Settings → Secrets → Actions):
+#   SUPABASE_URL       — from Supabase Dashboard → Settings → API
+#   SUPABASE_ANON_KEY  — from Supabase Dashboard → Settings → API
+# ═══════════════════════════════════════════════
+
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:   # allow manual runs from the Actions tab
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Write js/supabase-config.js from secrets.
+      # This file is gitignored and never committed.
+      - name: Inject Supabase credentials
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          cat > js/supabase-config.js << EOF
+          window.SUPABASE_URL      = '${SUPABASE_URL}';
+          window.SUPABASE_ANON_KEY = '${SUPABASE_ANON_KEY}';
+          EOF
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload site artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
