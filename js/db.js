@@ -151,6 +151,27 @@ var db = {
     if (error) console.error('db.deleteYard:', error);
   },
 
+  // ── Geocache ─────────────────────────────────
+  // Shared Nominatim result cache so each address is only looked up once
+  // across all users. Bulk-loaded at startup into the in-memory geoCache.
+
+  async loadGeocache() {
+    var { data, error } = await sb.from('geocache').select('*');
+    if (error) { console.error('db.loadGeocache:', error); return {}; }
+    var cache = {};
+    (data || []).forEach(function(row) {
+      cache[row.addr] = { lat: row.lat, lon: row.lon, name: row.name };
+    });
+    return cache;
+  },
+
+  async saveGeocode(addr, result) {
+    var { error } = await sb.from('geocache')
+      .upsert({ addr: addr, lat: result.lat, lon: result.lon, name: result.name || null },
+               { onConflict: 'addr' });
+    if (error) console.error('db.saveGeocode:', error);
+  },
+
   // ── Settings ─────────────────────────────────
   // Stored as key/value pairs — value is any JSON-serializable type.
 

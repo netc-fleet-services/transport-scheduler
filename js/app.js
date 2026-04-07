@@ -553,13 +553,17 @@ function App() {
   // ── Initial data load from Supabase ────────────
   useEffect(() => {
     (async () => {
-      const [fetchedJobs, fetchedYards, fetchedDrivers, fetchedHpd, fetchedStaffing] = await Promise.all([
+      const [fetchedJobs, fetchedYards, fetchedDrivers, fetchedHpd, fetchedStaffing, fetchedGeocache] = await Promise.all([
         db.loadAllJobs(),
         db.loadYards(),
         db.loadDrivers(),
         db.loadSetting('hpd', 8),
         db.loadSetting('staffing', {}),
+        db.loadGeocache(),
       ]);
+      // Populate the shared in-memory cache (pre-seeds are already in geoCache,
+      // Object.assign keeps them and adds anything new from the DB)
+      Object.assign(geoCache, fetchedGeocache);
       setJobs(fetchedJobs);
       setHpd(fetchedHpd);
       setStaffing(fetchedStaffing);

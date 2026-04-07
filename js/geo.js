@@ -85,21 +85,19 @@ var CITY_ZIP = {
 
 // ── Geocoding Cache ─────────────────────────────
 // Keyed by full address string. Pre-seeded with yard addresses to avoid API calls.
-// Also persisted to localStorage so lookups survive page reloads.
+// Populated from Supabase at startup (see App useEffect) so lookups are shared
+// across all users — each address is only fetched from Nominatim once.
 var geoCache = {};
-geoCache["156 Epping Rd, Exeter NH"]      = { lat: 42.9814, lon: -70.9319, name: "Exeter, NH" };
+geoCache["156 Epping Rd, Exeter NH"]        = { lat: 42.9814, lon: -70.9319, name: "Exeter, NH" };
 geoCache["107 Sheep Davis Rd, Pembroke NH"] = { lat: 43.1473, lon: -71.4579, name: "Pembroke, NH" };
-geoCache["26 Thibeault Dr, Bow NH"]       = { lat: 43.1379, lon: -71.4792, name: "Bow, NH" };
-geoCache["305 Bradley St, Saco ME"]       = { lat: 43.5084, lon: -70.4618, name: "Saco, ME" };
-// Load any previously cached addresses from localStorage
-try {
-  var saved = JSON.parse(localStorage.getItem('netc_geocache') || '{}');
-  Object.assign(geoCache, saved);
-} catch(e) {}
+geoCache["26 Thibeault Dr, Bow NH"]         = { lat: 43.1379, lon: -71.4792, name: "Bow, NH" };
+geoCache["305 Bradley St, Saco ME"]         = { lat: 43.5084, lon: -70.4618, name: "Saco, ME" };
 
 // ── Nominatim Geocoding ─────────────────────────
 // Resolves a full address string to { lat, lon, name }.
-// Results are cached in geoCache + localStorage.
+// Results are saved to Supabase (shared across users) via db.saveGeocode().
+// db is defined in db.js which loads after geo.js, but geocode() is only
+// ever called at runtime (not parse-time), so db will always be defined.
 async function geocode(addr) {
   if (!addr || geoCache[addr]) return geoCache[addr] || null;
   try {
@@ -116,7 +114,7 @@ async function geocode(addr) {
         name: d[0].display_name.split(",").slice(0, 2).join(",").trim()
       };
       geoCache[addr] = res;
-      try { localStorage.setItem('netc_geocache', JSON.stringify(geoCache)); } catch(e) {}
+      db.saveGeocode(addr, res); // fire-and-forget — persist for all users
       return res;
     }
   } catch(e) {}
