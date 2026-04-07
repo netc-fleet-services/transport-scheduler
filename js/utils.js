@@ -80,12 +80,17 @@ function tbToISO(s) {
   if (y < 100) y += 2000;
   return y + "-" + String(parseInt(m[1])).padStart(2, "0") + "-" + String(parseInt(m[2])).padStart(2, "0");
 }
-// cityFrom: extract "City, ST" from a full address string
+// cityFrom: extract "City, ST" from a full address string.
+// Handles two formats TowBook uses:
+//   "123 Main St, Scarborough ME 04074"  (comma before city, no comma before state)
+//   "155 MAIN ST MILLINOCKET ME"         (no commas at all)
 function cityFrom(addr) {
   if (!addr) return "";
-  var m = addr.match(/([A-Za-z\s.'-]+),\s*([A-Z]{2})\s*\d{0,5}/);
-  if (m) return m[1].trim() + ", " + m[2];
-  return addr.length > 30 ? addr.substring(addr.length - 30) : addr;
+  // "..., City ST[ ZIP[-4]]" — last word(s) before a 2-letter state code
+  // Handles both "Scarborough ME 04074-8718" and "Pelham  NH 03076"
+  var m = addr.match(/\b([A-Za-z]{3,})\s+([A-Za-z]{2})\s*\d{0,5}(?:-\d{4})?\s*$/);
+  if (m) return m[1] + ", " + m[2].toUpperCase();
+  return "";
 }
 // sameZip: true if two ZIPs share the same 3-digit prefix (same region)
 function sameZip(a, b) { return a && b && a.substring(0, 3) === b.substring(0, 3); }

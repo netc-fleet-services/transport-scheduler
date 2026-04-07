@@ -100,19 +100,60 @@ geoCache["305 Bradley St, Saco ME"]         = { lat: 43.5084, lon: -70.4618, nam
 // ever called at runtime (not parse-time), so db will always be defined.
 async function geocode(addr) {
   if (!addr || geoCache[addr]) return geoCache[addr] || null;
+
+  // Extract ZIP and state abbreviation from the address string for result verification.
+  // Nominatim does fuzzy matching and can return wrong-state results for ambiguous addresses.
+  // ZIP gives the tightest constraint (3-digit prefix = ~county level).
+  // State is the fallback verifier when no ZIP is present.
+  var zipM    = addr.match(/\b[A-Za-z]{2}\s*(\d{5})\b/);
+  var zip     = zipM ? zipM[1] : ((addr.match(/\b(\d{5})\b/) || [])[1] || null);
+  var stateM  = addr.match(/\b([A-Za-z]{2})\s*(?:\d{5}(?:-\d{4})?)?\s*$/);
+  var addrSt  = stateM ? stateM[1].toUpperCase() : null;
+
   try {
     var r = await fetch(
       "https://nominatim.openstreetmap.org/search?q=" + encodeURIComponent(addr) +
-      "&format=json&limit=1&countrycodes=us",
+      "&format=json&limit=1&countrycodes=us&addressdetails=1",
       { headers: { "User-Agent": "NETC-Planner" } }
     );
     var d = await r.json();
+    var res = null;
+
     if (d && d[0]) {
-      var res = {
-        lat: parseFloat(d[0].lat),
-        lon: parseFloat(d[0].lon),
-        name: d[0].display_name.split(",").slice(0, 2).join(",").trim()
-      };
+      var ad         = d[0].address || {};
+      var returnedSt = ((ad["ISO3166-2-lvl4"] || "").split("-")[1] || "").toUpperCase();
+      var regionOk   = true;
+
+      if (zip) {
+        // ZIP prefix check — most precise. "030" vs "040" = NH vs ME.
+        var returnedZip = (ad.postcode || "").replace(/\D/g, "");
+        if (returnedZip && returnedZip.substring(0, 3) !== zip.substring(0, 3)) regionOk = false;
+      } else if (addrSt && returnedSt) {
+        // No ZIP — at minimum verify the state matches.
+        if (returnedSt !== addrSt) regionOk = false;
+      }
+
+      if (regionOk) {
+        var city   = ad.city || ad.town || ad.village || ad.hamlet || ad.suburb || ad.county || "";
+        var stCode = returnedSt || (ad.state || "").substring(0, 2).toUpperCase();
+        var nm     = city && stCode ? city + ", " + stCode : d[0].display_name.split(",")[0].trim();
+        res = { lat: parseFloat(d[0].lat), lon: parseFloat(d[0].lon), name: nm };
+      }
+    }
+
+    // Fallback chain when Nominatim returned nothing or the wrong region:
+    //   1. ZIP3 table — correct region, ~5-10 mile precision (requires ZIP)
+    //   2. cityLookup — parses city name from address, uses CITY_ZIP table (no ZIP needed)
+    if (!res && zip) {
+      var z = lz(zip);
+      if (z) res = { lat: z.lat, lon: z.lon, name: z.label };
+    }
+    if (!res) {
+      var cl = cityLookup(addr);
+      if (cl) res = { lat: cl.lat, lon: cl.lon, name: cityFrom(addr) || addr };
+    }
+
+    if (res) {
       geoCache[addr] = res;
       db.saveGeocode(addr, res); // fire-and-forget — persist for all users
       return res;

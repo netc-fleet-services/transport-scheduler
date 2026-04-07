@@ -138,8 +138,10 @@ function JobCard({ job, drivers, onUpdate, onRemove }) {
   const luH    = Math.max(1, 0.5 * stops.length + 1);
   const totalH = totalMi / 45 + luH;
 
-  const puN  = job.pickupAddr ? (geoCache[job.pickupAddr]?.name || cityFrom(job.pickupAddr)) : (lz(job.pickupZip)?.label || job.pickupZip || "?");
-  const drN  = job.dropAddr   ? (geoCache[job.dropAddr]?.name   || cityFrom(job.dropAddr))   : (lz(job.dropZip)?.label   || job.dropZip   || "?");
+  // cityFrom() parses "City, ST" directly from the address string — preferred over
+  // geoCache.name which historically surfaced business/POI names from Nominatim.
+  const puN  = job.pickupAddr ? (cityFrom(job.pickupAddr) || geoCache[job.pickupAddr]?.name || lz(job.pickupZip)?.label || job.pickupZip || "?") : (lz(job.pickupZip)?.label || job.pickupZip || "?");
+  const drN  = job.dropAddr   ? (cityFrom(job.dropAddr)   || geoCache[job.dropAddr]?.name   || lz(job.dropZip)?.label   || job.dropZip   || "?") : (lz(job.dropZip)?.label   || job.dropZip   || "?");
   const bc   = job.status === "cancelled" ? C.dm : job.status === "complete" ? C.gn : job.status === "active" ? C.am : job.driverId ? C.ac : C.pu;
   const dim  = job.status === "complete" || job.status === "cancelled";
   const pri  = job.priority || "normal";
