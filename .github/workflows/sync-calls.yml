@@ -34,7 +34,7 @@ jobs:
           cache: 'pip'
 
       - name: Install Python dependencies
-        run: pip install playwright supabase
+        run: pip install -r requirements.txt
 
       # Cache the Playwright browser binary so we don't re-download Chromium
       # on every run (saves ~30s and reduces bandwidth).
