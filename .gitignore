@@ -1,3 +1,6 @@
 # Supabase credentials — never commit this file.
 # Copy supabase-config.example.js → supabase-config.js and fill in your values.
 js/supabase-config.js
+
+# Local environment variables for running sync scripts manually.
+.env.local

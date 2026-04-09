@@ -551,32 +551,100 @@ function App() {
   const [newDr,        setNewDr]        = useState({ name: "", truck: "", yard: "exeter" });
   const [newYard,      setNewYard]      = useState({ short: "", addr: "", zip: "" });
   const [reasonFilter, setReasonFilter] = useState(() => LS.get('filter', "EQUIPMENT TRANSPORT"));
+  const [lastSynced,   setLastSynced]   = useState(null);
 
   // ── Initial data load from Supabase ────────────
   useEffect(() => {
     (async () => {
-      const [fetchedJobs, fetchedYards, fetchedDrivers, fetchedHpd, fetchedStaffing, fetchedGeocache] = await Promise.all([
+      let [fetchedJobs, fetchedYards, fetchedDrivers, fetchedHpd, fetchedStaffing, fetchedGeocache, fetchedLastSynced] = await Promise.all([
         db.loadAllJobs(),
         db.loadYards(),
         db.loadDrivers(),
         db.loadSetting('hpd', 8),
         db.loadSetting('staffing', {}),
         db.loadGeocache(),
+        db.loadSetting('last_synced', null),
       ]);
       // Populate the shared in-memory cache (pre-seeds are already in geoCache,
       // Object.assign keeps them and adds anything new from the DB)
       Object.assign(geoCache, fetchedGeocache);
-      setJobs(fetchedJobs);
-      setHpd(fetchedHpd);
-      setStaffing(fetchedStaffing);
+      if (fetchedLastSynced) setLastSynced(fetchedLastSynced);
 
-      // Yards: seed from DEFAULT_YARDS on first run, then keep the global in sync
+      // Populate YARDS global first — closestYard() depends on it and is
+      // called in the auto-assign blocks below.
       const yardsToUse = fetchedYards.length > 0 ? fetchedYards : DEFAULT_YARDS;
       YARDS.splice(0, YARDS.length, ...yardsToUse);
       setYards(yardsToUse);
       if (!fetchedYards.length) {
         await Promise.all(DEFAULT_YARDS.map(y => db.upsertYard(y)));
       }
+
+      // Auto-assign yard for jobs imported by the sync script (yard_id is null
+      // on arrival). Uses closestYard() against the pickup address/zip — same
+      // logic as the manual bookmarklet import. Saves back to Supabase once so
+      // every user sees the assignment without recomputing it.
+      const unassigned = fetchedJobs.filter(j => !j.yardId && j.status === 'scheduled');
+      if (unassigned.length > 0) {
+        const assigned = unassigned.map(j => ({
+          ...j,
+          yardId: closestYard(j.pickupAddr, j.pickupZip).id,
+        }));
+        await db.batchUpsertJobs(assigned);
+        const assignedById = Object.fromEntries(assigned.map(j => [j.id, j]));
+        fetchedJobs = fetchedJobs.map(j => assignedById[j.id] || j);
+      }
+
+      // Auto-match TowBook driver names to local driver records for jobs that
+      // arrived from the sync script with tbDriver set but no driverId.
+      // Unknown drivers are created from the TowBook name so the assignment
+      // is preserved — dispatchers can fill in truck/yard details later.
+      const needDriverMatch = fetchedJobs.filter(
+        j => j.tbDriver && !j.driverId && j.status === 'scheduled'
+      );
+      if (needDriverMatch.length > 0) {
+        let currentDrivers = [...fetchedDrivers];
+        const createdDrivers = [];
+
+        // One new driver record per unique unknown name
+        const uniqueNames = [...new Set(needDriverMatch.map(j => j.tbDriver))];
+        for (const tbName of uniqueNames) {
+          const dn = tbName.toLowerCase();
+          const existing = currentDrivers.find(dr =>
+            dr.name.toLowerCase() === dn ||
+            dr.name.toLowerCase().split(/\s+/).some(p => p.length > 2 && dn.includes(p))
+          );
+          if (!existing) {
+            const sampleJob = needDriverMatch.find(j => j.tbDriver === tbName);
+            const newId  = Math.max(0, ...currentDrivers.map(d => d.id)) + 1;
+            const newDrv = { id: newId, name: tbName, truck: '', yard: sampleJob?.yardId || YARDS[0]?.id || '' };
+            currentDrivers.push(newDrv);
+            createdDrivers.push(newDrv);
+          }
+        }
+        if (createdDrivers.length > 0) {
+          await Promise.all(createdDrivers.map(d => db.upsertDriver(d)));
+          fetchedDrivers = [...fetchedDrivers, ...createdDrivers];
+        }
+
+        // Match jobs to driver IDs and persist
+        const matchedJobs = needDriverMatch.flatMap(j => {
+          const dn    = j.tbDriver.toLowerCase();
+          const match = currentDrivers.find(dr =>
+            dr.name.toLowerCase() === dn ||
+            dr.name.toLowerCase().split(/\s+/).some(p => p.length > 2 && dn.includes(p))
+          );
+          return match ? [{ ...j, driverId: match.id }] : [];
+        });
+        if (matchedJobs.length > 0) {
+          await db.batchUpsertJobs(matchedJobs);
+          const byId = Object.fromEntries(matchedJobs.map(j => [j.id, j]));
+          fetchedJobs = fetchedJobs.map(j => byId[j.id] || j);
+        }
+      }
+
+      setJobs(fetchedJobs);
+      setHpd(fetchedHpd);
+      setStaffing(fetchedStaffing);
 
       // Drivers: seed from defaultDrivers on first run
       if (fetchedDrivers.length > 0) {
@@ -587,6 +655,37 @@ function App() {
       }
       setLoaded(true);
     })();
+  }, []);
+
+  // ── Supabase Realtime ───────────────────────────
+  // Listens for changes pushed by the sync script so dispatchers see
+  // new/updated/deleted jobs without refreshing the page.
+  useEffect(() => {
+    const channel = sb.channel('jobs-realtime')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'jobs' }, ({ new: row }) => {
+        let job = jobToApp(row);
+        // Auto-assign yard if the sync script left it null
+        if (!job.yardId) {
+          job = { ...job, yardId: closestYard(job.pickupAddr, job.pickupZip).id };
+          db.upsertJob(job);
+        }
+        setJobs(prev => prev.some(j => j.id === job.id) ? prev : [...prev, job]);
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'jobs' }, ({ new: row }) => {
+        // Merge DB state in — yard_id and driver_id are preserved server-side
+        // so jobToApp(row) already has the correct values.
+        setJobs(prev => prev.map(j => j.id === row.id ? jobToApp(row) : j));
+      })
+      .on('postgres_changes', { event: 'DELETE', schema: 'public', table: 'jobs' }, (payload) => {
+        const id = payload.old?.id;
+        if (id) setJobs(prev => prev.filter(j => j.id !== id));
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'settings',
+           filter: 'key=eq.last_synced' }, ({ new: row }) => {
+        if (row?.value) setLastSynced(row.value);
+      })
+      .subscribe();
+    return () => sb.removeChannel(channel);
   }, []);
 
   // Persist filter preference locally (it's per-user, not shared)
@@ -828,6 +927,11 @@ function App() {
       <div>
         <div style={{ fontSize: 9, fontWeight: 700, textTransform: "uppercase", letterSpacing: 2, color: C.dm }}>NETC Transport</div>
         <div style={{ fontSize: 20, fontWeight: 800 }}>Capacity Planner</div>
+        {lastSynced && (() => {
+          const diff = Math.floor((now - new Date(lastSynced)) / 60000);
+          const label = diff < 1 ? 'just now' : diff === 1 ? '1 min ago' : diff + ' min ago';
+          return <div style={{ fontSize: 9, color: C.dm }}>TowBook synced {label}</div>;
+        })()}
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
         <span style={{ fontSize: 15, fontWeight: 800 }}>{fT(now)}</span>
