@@ -171,8 +171,8 @@ function JobCard({ job, drivers, onUpdate, onRemove }) {
       <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
         <div className="pri" style={{ background: PRI_COLORS[pri] }} title={pri} />
         {job.tbCallNum && <span style={{ fontSize: 15, fontWeight: 800, color: C.pu }}>{job.tbCallNum}</span>}
-        {job.tbAccount && <span style={{ fontSize: 13, fontWeight: 700, color: C.ac }}>{job.tbAccount}</span>}
-        {job.tbDesc    && <span style={{ fontSize: 11, color: C.dm }}>{job.tbDesc}</span>}
+        {job.tbAccount && <span style={{ fontSize: 12, fontWeight: 700, color: C.ac }}>{job.tbAccount}</span>}
+        {job.tbDesc    && <span style={{ fontSize: 10, fontWeight: 600, color: C.tx, background: C.sf, padding: "1px 6px", borderRadius: 10 }}>{job.tbDesc.trim()}</span>}
         {job.tbReason  && <span style={{ fontSize: 9, color: C.dm, background: C.sf, padding: "1px 6px", borderRadius: 10 }}>{job.tbReason}</span>}
         {stops.length > 0 && <span style={{ fontSize: 8, color: C.am, background: C.ab, padding: "1px 5px", borderRadius: 8, fontWeight: 700 }}>{stops.length + 2} STOPS</span>}
         {job.status === "active"    && <span style={{ fontSize: 8, fontWeight: 700, padding: "2px 5px", borderRadius: 3, background: C.ab, color: C.am, animation: "pulse 2s infinite" }}>ACTIVE</span>}
@@ -1164,8 +1164,8 @@ function App() {
 
   // ── Derived state ───────────────────────────────
 
-  const LOC_MAP   = { '1': 'NETC', '2': "Matt Brown's", '3': "Ray's", '4': 'Interstate' };
-  const locLabel  = (cn) => { const s = (cn || '').replace(/^#/, ''); return LOC_MAP[s[0]] || null; };
+  const LOC_MAP = { '1': 'NETC', '2': "Matt Brown's", '3': "Ray's", '4': 'Interstate' };
+  const locLabel = (cn) => { const s = (cn || '').replace(/^#/, ''); return LOC_MAP[s[0]] || null; };
 
   const calDays   = useMemo(() => genDays(21), []);
   const filt      = (arr) => {
@@ -1248,7 +1248,7 @@ function App() {
 
     {/* Reason filter */}
     {(tab === "schedule" || tab === "drivers") && allReasons.length > 1 && <div className="fb">
-      <span style={{ fontSize: 9, color: C.dm, fontWeight: 600, alignSelf: "center", marginRight: 2 }}>SHOW:</span>
+      <span style={{ fontSize: 9, color: C.dm, fontWeight: 600, alignSelf: "center", marginRight: 2 }}>JOB TYPE:</span>
       {allReasons.map(r => <button key={r} className={"fbtn" + (reasonFilter === r ? " on" : "")} onClick={() => setReasonFilter(r)}>
         {r === "ALL" ? "All" : r} ({r === "ALL" ? jobs.filter(j => j.status !== "cancelled").length : jobs.filter(j => j.tbReason === r && j.status !== "cancelled").length})
       </button>)}

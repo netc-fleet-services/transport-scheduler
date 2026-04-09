@@ -156,7 +156,7 @@ def scrape_calls():
                     sched = raw[:paren].strip() if paren > -1 else raw.strip()
 
             # Field values from div.title / div.text pairs inside ul.details1
-            pickup = drop = reason = driver = truck = ''
+            pickup = drop = reason = driver = truck = account = ''
             for li in row.locator("ul.details1 > li").all():
                 title_el = li.locator(".title")
                 text_el  = li.locator(".text")
@@ -167,11 +167,12 @@ def scrape_calls():
                        text_el.first.text_content() or '').strip()
                 val = re.sub(r'\s+', ' ', val).strip()
 
-                if   lbl == 'Tow Source':    pickup = val
-                elif lbl == 'Reason':        reason = val
-                elif lbl == 'Driver':        driver = val
-                elif lbl == 'Truck':         truck  = val
-                elif lbl == 'Destination':   drop   = val
+                if   lbl == 'Tow Source':    pickup  = val
+                elif lbl == 'Reason':        reason  = val
+                elif lbl == 'Driver':        driver  = val
+                elif lbl == 'Truck':         truck   = val
+                elif lbl == 'Destination':   drop    = val
+                elif lbl == 'Account':       account = val
 
             pickup = parse_addr(pickup)
             drop   = parse_addr(drop)
@@ -181,6 +182,7 @@ def scrape_calls():
                 calls.append({
                     'call_num':   call_num,
                     'desc':       desc,
+                    'account':    account,
                     'pickup':     pickup,
                     'drop':       drop,
                     'pickup_zip': extract_zip(pickup),
@@ -224,6 +226,7 @@ def sync_to_supabase(tb_calls):
                 "pickup_zip":   call["pickup_zip"],
                 "drop_zip":     call["drop_zip"],
                 "tb_desc":      call["desc"],
+                "tb_account":   call["account"],
                 "tb_scheduled": call["scheduled"],
                 "tb_reason":    call["reason"],
                 "tb_driver":    call["driver"],
@@ -236,6 +239,7 @@ def sync_to_supabase(tb_calls):
                 "id":           str(uuid.uuid4()),
                 "tb_call_num":  cn,
                 "tb_desc":      call["desc"],
+                "tb_account":   call["account"],
                 "pickup_addr":  call["pickup"],
                 "drop_addr":    call["drop"],
                 "pickup_zip":   call["pickup_zip"],
