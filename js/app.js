@@ -531,6 +531,190 @@ function SettingsTab({ yards, onAddYard, onUpdateYard, onDeleteYard, newYard, se
   </div>;
 }
 
+// ── OptimizerModal ──────────────────────────────
+// Shows greedy route suggestions for the day.
+// Dispatcher can reassign jobs via dropdowns before applying.
+function OptimizerModal({ state, drivers, onUpdate, onApply, onClose }) {
+  const moveJob = (jobId, toVal) => {
+    onUpdate(prev => {
+      const next = {
+        driverStates: prev.driverStates.map(ds => ({ ...ds, jobs: [...ds.jobs] })),
+        unassigned: [...prev.unassigned],
+      };
+      let job = null;
+      for (const ds of next.driverStates) {
+        const i = ds.jobs.findIndex(j => j.id === jobId);
+        if (i > -1) { [job] = ds.jobs.splice(i, 1); break; }
+      }
+      if (!job) {
+        const i = next.unassigned.findIndex(j => j.id === jobId);
+        if (i > -1) [job] = next.unassigned.splice(i, 1);
+      }
+      if (!job) return prev;
+      if (toVal === 'unassigned') {
+        next.unassigned.push(job);
+      } else {
+        const ds = next.driverStates.find(d => String(d.driver.id) === String(toVal));
+        if (ds) ds.jobs.push(job);
+      }
+      next.driverStates.forEach(ds => { ds.usedH = ds.jobs.reduce((s, j) => { const t = jobTotal(j); return s + (isFinite(t) && t > 0 ? t : 1); }, 0); });
+      return next;
+    });
+  };
+
+  const assigned   = state.driverStates.reduce((s, ds) => s + ds.jobs.length, 0);
+  const unassigned = state.unassigned.length;
+
+  return (
+    <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.75)', zIndex:1000, overflowY:'auto', padding:20 }}>
+      <div style={{ maxWidth:740, margin:'0 auto', background:C.bg, borderRadius:10, border:'1px solid '+C.bd, padding:20 }}>
+
+        {/* Header */}
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:16 }}>
+          <div>
+            <div style={{ fontSize:18, fontWeight:800, color:C.tx }}>Route Suggestions</div>
+            <div style={{ fontSize:10, color:C.dm }}>{assigned} jobs assigned · {unassigned} unassigned</div>
+          </div>
+          <div style={{ display:'flex', gap:6 }}>
+            <button style={{ ...bP, background:C.pu }} onClick={onApply}>Apply Assignments</button>
+            <button style={bSt} onClick={onClose}>Discard</button>
+          </div>
+        </div>
+
+        {/* Driver sections */}
+        {state.driverStates.filter(ds => ds.jobs.length > 0).map(ds => {
+          const over   = ds.usedH > 8;
+          const barPct = Math.min((ds.usedH / 8) * 100, 100);
+          const barCol = ds.usedH >= 8 ? C.rd : ds.usedH >= 6 ? C.am : C.gn;
+          let prevPos  = crd(ds.yard.addr, ds.yard.zip);
+
+          return (
+            <div key={ds.driver.id} style={{ border:'1px solid '+C.bd, borderRadius:8, marginBottom:10, overflow:'hidden' }}>
+              <div style={{ background:C.cd, padding:'8px 12px' }}>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:4 }}>
+                  <div>
+                    <span style={{ fontSize:13, fontWeight:700, color:C.tx }}>{ds.driver.name}</span>
+                    <span style={{ fontSize:10, color:C.dm, marginLeft:8 }}>{ds.yard.short}</span>
+                    {ds.driver.truck && <span style={{ fontSize:10, color:C.dm, marginLeft:4 }}>· {ds.driver.truck}</span>}
+                  </div>
+                  <div>
+                    <span style={{ fontSize:13, fontWeight:800, color: over ? C.rd : C.tx }}>{fH(ds.usedH)}</span>
+                    {over && <span style={{ fontSize:8, color:C.rd, marginLeft:4 }}>OVER 8H</span>}
+                  </div>
+                </div>
+                <div style={{ height:4, background:C.sf, borderRadius:2, overflow:'hidden' }}>
+                  <div style={{ height:'100%', width:barPct+'%', background:barCol, borderRadius:2 }} />
+                </div>
+              </div>
+
+              <div style={{ padding:'6px 12px 10px' }}>
+                {ds.jobs.map(job => {
+                  const pc = crd(job.pickupAddr, job.pickupZip);
+                  const dc = crd(job.dropAddr, job.dropZip);
+                  const dh = (prevPos && pc) ? Math.round(dMi(prevPos, pc)) : null;
+                  if (dc) prevPos = dc; else if (pc) prevPos = pc;
+                  const puN = cityFrom(job.pickupAddr) || lz(job.pickupZip)?.label || job.pickupZip || '?';
+                  const drN = cityFrom(job.dropAddr)   || lz(job.dropZip)?.label   || job.dropZip   || '?';
+                  return (
+                    <div key={job.id}>
+                      {dh !== null && <div style={{ fontSize:10, color:C.dm, paddingLeft:8, margin:'2px 0' }}>↓ {dh}mi empty</div>}
+                      <div style={{ padding:'7px 10px', background:C.sf, borderRadius:5, marginBottom:4 }}>
+                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:8, marginBottom:4 }}>
+                          <div style={{ flex:1, minWidth:0 }}>
+                            <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap', marginBottom:2 }}>
+                              {job.tbCallNum && <span style={{ fontSize:13, fontWeight:800, color:C.pu }}>{job.tbCallNum}</span>}
+                              {job.tbAccount && <span style={{ fontSize:12, fontWeight:600, color:C.ac }}>{job.tbAccount}</span>}
+                              {job.tbDesc && <span style={{ fontSize:11, color:C.dm }}>{job.tbDesc.trim()}</span>}
+                            </div>
+                            <div style={{ fontSize:12, color:C.tx }}>{puN} → {drN}</div>
+                          </div>
+                          <span style={{ fontSize:13, fontWeight:700, color:C.am, whiteSpace:'nowrap' }}>{fH(jobTotal(job))}</span>
+                        </div>
+                        <div style={{ display:'flex', justifyContent:'flex-end' }}>
+                          <select style={{ ...sS, fontSize:10, padding:'2px 6px', minWidth:110 }}
+                            value={ds.driver.id} onChange={e => moveJob(job.id, e.target.value)}>
+                            {drivers.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                            <option value="unassigned">— Unassign</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+
+        {/* Unassigned */}
+        {state.unassigned.length > 0 && (
+          <div style={{ border:'1px solid '+C.rd, borderRadius:8, overflow:'hidden' }}>
+            <div style={{ background:'#1a0d0d', padding:'8px 12px', display:'flex', alignItems:'center', gap:8 }}>
+              <span style={{ fontSize:12, fontWeight:700, color:C.rd }}>Unassigned ({state.unassigned.length})</span>
+              <span style={{ fontSize:9, color:C.dm }}>All drivers at shift limit or no capacity</span>
+            </div>
+            <div style={{ padding:'6px 12px 10px' }}>
+              {state.unassigned.map(job => {
+                const puN = cityFrom(job.pickupAddr) || lz(job.pickupZip)?.label || job.pickupZip || '?';
+                const drN = cityFrom(job.dropAddr)   || lz(job.dropZip)?.label   || job.dropZip   || '?';
+                return (
+                  <div key={job.id} style={{ padding:'7px 10px', background:C.sf, borderRadius:5, marginBottom:4 }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:8, marginBottom:4 }}>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap', marginBottom:2 }}>
+                          {job.tbCallNum && <span style={{ fontSize:13, fontWeight:800, color:C.pu }}>{job.tbCallNum}</span>}
+                          {job.tbAccount && <span style={{ fontSize:12, fontWeight:600, color:C.ac }}>{job.tbAccount}</span>}
+                        </div>
+                        <div style={{ fontSize:12, color:C.tx }}>{puN} → {drN}</div>
+                      </div>
+                      <span style={{ fontSize:13, fontWeight:700, color:C.am }}>{fH(jobTotal(job))}</span>
+                    </div>
+                    <div style={{ display:'flex', justifyContent:'flex-end' }}>
+                      <select style={{ ...sS, fontSize:10, padding:'2px 6px', minWidth:110 }}
+                        value="unassigned" onChange={e => { if (e.target.value !== 'unassigned') moveJob(job.id, e.target.value); }}>
+                        <option value="unassigned">Assign to…</option>
+                        {drivers.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── NewJobToast ──────────────────────────────────
+// Bottom-right toast shown when a new job's pickup is near
+// an existing driver's last drop — signals a potential stack.
+function NewJobToast({ toasts, onDismiss }) {
+  if (!toasts.length) return null;
+  return (
+    <div style={{ position:'fixed', bottom:20, right:20, zIndex:900, display:'flex', flexDirection:'column', gap:8, maxWidth:300 }}>
+      {toasts.map(t => (
+        <div key={t.id} style={{ background:C.cd, border:'1px solid '+C.am, borderRadius:8, padding:'10px 12px', boxShadow:'0 4px 16px rgba(0,0,0,0.5)' }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:4 }}>
+            <span style={{ fontSize:11, fontWeight:700, color:C.am }}>Potential stack</span>
+            <button style={{ ...bSt, padding:'0 5px', fontSize:10 }} onClick={() => onDismiss(t.id)}>✕</button>
+          </div>
+          <div style={{ fontSize:12, fontWeight:800, color:C.pu, marginBottom:2 }}>{t.job.tbCallNum}{t.job.tbAccount ? ' · '+t.job.tbAccount : ''}</div>
+          <div style={{ fontSize:10, color:C.dm, marginBottom:6 }}>
+            Pickup: {cityFrom(t.job.pickupAddr) || lz(t.job.pickupZip)?.label || t.job.pickupZip || '?'}
+          </div>
+          {t.matches.map((m, i) => (
+            <div key={i} style={{ fontSize:10, color:C.tx, background:C.sf, borderRadius:4, padding:'3px 6px', marginBottom:2 }}>
+              {Math.round(m.dist)}mi from <strong>{m.driver.name}</strong>'s drop on {m.nearJob.tbCallNum || 'job'}
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── App ─────────────────────────────────────────
 // Root component. Fetches all data from Supabase on mount,
 // then manages state + orchestrates the four tabs.
@@ -555,6 +739,17 @@ function App() {
   const [reasonFilter,   setReasonFilter]   = useState(() => LS.get('filter', "EQUIPMENT TRANSPORT"));
   const [locationFilter, setLocationFilter] = useState("ALL");
   const [lastSynced,     setLastSynced]     = useState(null);
+  const [showOptimizer,  setShowOptimizer]  = useState(false);
+  const [optState,       setOptState]       = useState(null);
+  const [jobToasts,      setJobToasts]      = useState([]);
+
+  // Refs so Realtime callbacks (which close over initial state) always see current values
+  const jobsRef    = React.useRef([]);
+  const driversRef = React.useRef([]);
+  const viewDayRef = React.useRef(viewDay);
+  useEffect(() => { jobsRef.current    = jobs;    }, [jobs]);
+  useEffect(() => { driversRef.current = drivers; }, [drivers]);
+  useEffect(() => { viewDayRef.current = viewDay; }, [viewDay]);
 
   // ── Initial data load from Supabase ────────────
   useEffect(() => {
@@ -673,6 +868,31 @@ function App() {
           db.upsertJob(job);
         }
         setJobs(prev => prev.some(j => j.id === job.id) ? prev : [...prev, job]);
+
+        // Check if this new job's pickup is close to any assigned driver's drop
+        // for the current day — if so, surface a "potential stack" toast.
+        if (job.day === viewDayRef.current) {
+          const pc = crd(job.pickupAddr, job.pickupZip);
+          if (pc) {
+            const matches = [];
+            driversRef.current.forEach(driver => {
+              jobsRef.current
+                .filter(j => j.driverId === driver.id && j.day === viewDayRef.current && j.status !== 'cancelled')
+                .forEach(nearJob => {
+                  const dc = crd(nearJob.dropAddr, nearJob.dropZip);
+                  if (dc) {
+                    const dist = dMi(dc, pc);
+                    if (dist < 25) matches.push({ driver, nearJob, dist });
+                  }
+                });
+            });
+            if (matches.length > 0) {
+              const toastId = uid();
+              setJobToasts(prev => [...prev, { id: toastId, job, matches }]);
+              setTimeout(() => setJobToasts(prev => prev.filter(t => t.id !== toastId)), 30000);
+            }
+          }
+        }
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'jobs' }, ({ new: row }) => {
         // Merge DB state in — yard_id and driver_id are preserved server-side
@@ -796,6 +1016,71 @@ function App() {
       db.saveSetting('staffing', next);
       return next;
     });
+  };
+
+  // ── Route optimizer ─────────────────────────────
+
+  const runOptimizer = () => {
+    const dayJobs = jobs.filter(j => j.day === viewDay && j.status !== 'cancelled');
+
+    // Fresh start: every driver begins at their yard with 0 jobs so the
+    // 8-hour cap is always enforced regardless of prior manual assignments.
+    const driverStates = drivers.map(d => {
+      const yard = YARDS.find(y => y.id === d.yard) || YARDS[0];
+      if (!yard) return null;
+      return { driver: d, yard, jobs: [], usedH: 0, curPos: crd(yard.addr, yard.zip) };
+    }).filter(Boolean);
+
+    // Precompute hours per job once (avoids repeated geocache lookups in inner loop).
+    // Jobs with missing geocache entries default to 1h so usedH stays finite.
+    const jobHrs = {};
+    for (const job of dayJobs) {
+      const t = jobTotal(job);
+      jobHrs[job.id] = (isFinite(t) && t > 0) ? t : 1;
+    }
+
+    // All scheduled jobs go into the pool to be (re-)assigned from scratch
+    let remaining = [...dayJobs];
+    while (remaining.length > 0) {
+      let bestDh = Infinity, bestDs = null, bestJob = null;
+      for (const ds of driverStates) {
+        if (ds.usedH >= 8) continue;                    // driver at daily limit
+        for (const job of remaining) {
+          const jh = jobHrs[job.id];
+          // A job > 8h must be the driver's ONLY job for the day
+          if (jh > 8 && ds.jobs.length > 0) continue;
+          const pc = crd(job.pickupAddr, job.pickupZip);
+          if (!pc || !ds.curPos) continue;
+          const dh = dMi(ds.curPos, pc);
+          if (dh < bestDh) { bestDh = dh; bestDs = ds; bestJob = job; }
+        }
+      }
+      if (!bestDs) break;                               // all drivers at limit or no coords
+      bestDs.jobs.push(bestJob);
+      bestDs.usedH += jobHrs[bestJob.id];
+      const dc = crd(bestJob.dropAddr, bestJob.dropZip);
+      if (dc) bestDs.curPos = dc;
+      remaining = remaining.filter(j => j.id !== bestJob.id);
+    }
+
+    setOptState({ driverStates, unassigned: remaining });
+    setShowOptimizer(true);
+  };
+
+  const applyOptimizer = () => {
+    if (!optState) return;
+    const updates = [];
+    for (const ds of optState.driverStates) {
+      for (const job of ds.jobs) {
+        if (job.driverId !== ds.driver.id) updates.push({ ...job, driverId: ds.driver.id });
+      }
+    }
+    for (const job of optState.unassigned) {
+      if (job.driverId) updates.push({ ...job, driverId: 0 });
+    }
+    updates.forEach(j => updJob(j.id, { driverId: j.driverId }));
+    setShowOptimizer(false);
+    setOptState(null);
   };
 
   // ── TowBook import ──────────────────────────────
@@ -1062,7 +1347,10 @@ function App() {
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
         <button style={{ ...bSt, color: C.pu, borderColor: C.pu }} onClick={doImport}>📋 Import TowBook</button>
-        <button style={bP} onClick={() => setShowForm(!showForm)}>{showForm ? "Cancel" : "+ Add Job"}</button>
+        <div style={{ display: "flex", gap: 6 }}>
+          {vSch.length > 0 && <button style={{ ...bSt, color: C.gn, borderColor: C.gn }} onClick={runOptimizer}>⚡ Optimize Day</button>}
+          <button style={bP} onClick={() => setShowForm(!showForm)}>{showForm ? "Cancel" : "+ Add Job"}</button>
+        </div>
       </div>
 
       {showForm && <div style={{ ...cB, background: C.ca, borderColor: C.ac }}>
@@ -1114,6 +1402,23 @@ function App() {
       <span>Truck calibrated 1.25× road · 45 mph · +1h load · Shared via Supabase</span>
       <span>v4.0</span>
     </div>
+
+    {/* Route optimizer modal */}
+    {showOptimizer && optState && (
+      <OptimizerModal
+        state={optState}
+        drivers={drivers}
+        onUpdate={setOptState}
+        onApply={applyOptimizer}
+        onClose={() => { setShowOptimizer(false); setOptState(null); }}
+      />
+    )}
+
+    {/* New-job stacking toasts */}
+    <NewJobToast
+      toasts={jobToasts}
+      onDismiss={id => setJobToasts(prev => prev.filter(t => t.id !== id))}
+    />
   </div>;
 }
 
