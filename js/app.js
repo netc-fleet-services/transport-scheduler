@@ -188,7 +188,20 @@ function JobCard({ job, drivers, onUpdate, onRemove }) {
       </div>
     </div>
 
-    {job.tbScheduled && <div style={{ fontSize: 12, fontWeight: 600, color: C.tx, marginBottom: 4 }}>{job.tbScheduled}</div>}
+    {/* Scheduled time + editable date override */}
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <span style={{ fontSize: 8, color: C.dm, fontWeight: 600 }}>DATE:</span>
+        <input
+          type="date"
+          style={{ ...iS, fontSize: 10, padding: "2px 5px", width: 120 }}
+          value={job.day || ""}
+          onChange={e => { if (e.target.value) onUpdate({ day: e.target.value }); }}
+          title="Override the day this job appears on"
+        />
+      </div>
+      {job.tbScheduled && <span style={{ fontSize: 12, fontWeight: 600, color: C.tx }}>{job.tbScheduled}</span>}
+    </div>
 
     {/* Yard / Driver / Priority selects */}
     <div style={{ display: "flex", gap: 5, marginBottom: 6 }}>
@@ -285,12 +298,52 @@ function JobCard({ job, drivers, onUpdate, onRemove }) {
 function DriversTab({ jobs, drivers, viewDay, hpd, onExportCSV }) {
   const dayJobs = jobs.filter(j => j.day === viewDay && j.status !== "cancelled");
 
+  // Driver-specific filters — built from actual driver data, independent of job filters
+  const [drvYard, setDrvYard] = React.useState("ALL");
+  const [drvFunc, setDrvFunc] = React.useState("ALL");
+
+  const allYards = React.useMemo(() => {
+    const ids = [...new Set(drivers.map(d => d.yard).filter(Boolean))].sort();
+    return ["ALL", ...ids];
+  }, [drivers]);
+
+  const allFuncs = React.useMemo(() => {
+    const fs = [...new Set(drivers.map(d => d.func).filter(Boolean))].sort();
+    return ["ALL", ...fs];
+  }, [drivers]);
+
+  const visDrivers = React.useMemo(() => {
+    let out = drivers;
+    if (drvYard !== "ALL") out = out.filter(d => d.yard === drvYard);
+    if (drvFunc !== "ALL") out = out.filter(d => d.func === drvFunc);
+    return out;
+  }, [drivers, drvYard, drvFunc]);
+
+  const yardLabel = id => YARDS.find(y => y.id === id)?.short || id;
+
   return <div>
     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
       <div style={{ fontSize: 14, fontWeight: 700 }}>{dayFull(viewDay)} - Driver Schedules</div>
       {dayJobs.length > 0 && <button style={{ ...bSt, color: C.gn, borderColor: C.gn, fontSize: 10 }} onClick={() => onExportCSV(dayJobs, "drivers-" + viewDay + ".csv")}>⬇ CSV</button>}
     </div>
-    {drivers.map(d => {
+
+    {/* Yard filter */}
+    {allYards.length > 2 && <div className="fb" style={{ marginBottom: 6 }}>
+      <span style={{ fontSize: 9, color: C.dm, fontWeight: 600, alignSelf: "center", marginRight: 2 }}>YARD:</span>
+      {allYards.map(y => <button key={y} className={"fbtn" + (drvYard === y ? " on" : "")} onClick={() => setDrvYard(y)}>
+        {y === "ALL" ? "All" : yardLabel(y)} ({y === "ALL" ? drivers.length : drivers.filter(d => d.yard === y).length})
+      </button>)}
+    </div>}
+
+    {/* Function filter */}
+    {allFuncs.length > 2 && <div className="fb" style={{ marginBottom: 10 }}>
+      <span style={{ fontSize: 9, color: C.dm, fontWeight: 600, alignSelf: "center", marginRight: 2 }}>FUNCTION:</span>
+      {allFuncs.map(f => <button key={f} className={"fbtn" + (drvFunc === f ? " on" : "")} onClick={() => setDrvFunc(f)}>
+        {f === "ALL" ? "All" : f} ({f === "ALL" ? drivers.length : drivers.filter(d => d.func === f).length})
+      </button>)}
+    </div>}
+
+    {visDrivers.map(d => {
       const dj      = dayJobs.filter(j => j.driverId === d.id);
       const totalH  = dj.reduce((s, j) => s + jobTotal(j), 0);
       const totalMi = dj.reduce((s, j) => s + jobMiles(j), 0);
@@ -1348,37 +1401,6 @@ function App() {
   // Driver function values
   const DRIVER_FUNCTIONS = ["Transport", "Heavy Duty Towing", "Road Service", "Light Duty Towing"];
 
-  // TowBook reason → driver function(s) that can handle it
-  const REASON_TO_FUNC = {
-    "Crane Service":             ["Heavy Duty Towing"],
-    "Equipment Transport":       ["Transport"],
-    "HDT - Equipment Transport": ["Transport", "Heavy Duty Towing"],
-    "Heavy Duty Tow":            ["Heavy Duty Towing"],
-    "Light Duty Tow":            ["Light Duty Towing"],
-    "Road Service":              ["Road Service"],
-  };
-
-  // Location filter → yard IDs that serve those calls (null = no restriction)
-  const LOC_TO_YARDS = {
-    "NETC":        ["exeter", "pembroke"],
-    "Matt Brown's":["mattbrowns"],
-    "Ray's":       ["rays"],
-    "Interstate":  null,
-  };
-
-  // Drivers filtered by the active reason + location filters
-  const filtDrivers = useMemo(() => {
-    let out = drivers;
-    if (locationFilter !== "ALL") {
-      const yardIds = LOC_TO_YARDS[locationFilter];
-      if (yardIds) out = out.filter(d => yardIds.includes(d.yard));
-    }
-    if (reasonFilter !== "ALL") {
-      const funcs = REASON_TO_FUNC[reasonFilter];
-      if (funcs) out = out.filter(d => !d.func || funcs.includes(d.func));
-    }
-    return out;
-  }, [drivers, locationFilter, reasonFilter]);
 
   const calDays   = useMemo(() => genDays(21), []);
   const filt      = (arr) => {
@@ -1460,7 +1482,7 @@ function App() {
     </div>
 
     {/* Reason filter */}
-    {(tab === "schedule" || tab === "drivers") && allReasons.length > 1 && <div className="fb">
+    {tab === "schedule" && allReasons.length > 1 && <div className="fb">
       <span style={{ fontSize: 9, color: C.dm, fontWeight: 600, alignSelf: "center", marginRight: 2 }}>JOB TYPE:</span>
       {allReasons.map(r => <button key={r} className={"fbtn" + (reasonFilter === r ? " on" : "")} onClick={() => setReasonFilter(r)}>
         {r === "ALL" ? "All" : r} ({r === "ALL" ? jobs.filter(j => j.status !== "cancelled").length : jobs.filter(j => j.tbReason === r && j.status !== "cancelled").length})
@@ -1468,7 +1490,7 @@ function App() {
     </div>}
 
     {/* Location filter — derived from call number prefix */}
-    {(tab === "schedule" || tab === "drivers") && <div className="fb">
+    {tab === "schedule" && <div className="fb">
       <span style={{ fontSize: 9, color: C.dm, fontWeight: 600, alignSelf: "center", marginRight: 2 }}>LOCATION:</span>
       {["ALL", "NETC", "Matt Brown's", "Ray's", "Interstate"].map(loc => {
         const count = loc === "ALL"
@@ -1573,8 +1595,8 @@ function App() {
       </div>}
     </>}
 
-    {tab === "drivers"  && <DriversTab jobs={filt(jobs.filter(j => j.status !== "cancelled"))} drivers={filtDrivers} viewDay={viewDay} hpd={hpd} onExportCSV={exportCSV} />}
-    {tab === "metrics"  && <MetricsTab jobs={jobs} drivers={drivers} viewDay={viewDay} hpd={hpd} staffing={staffing} filtDriverCount={filtDrivers.length} />}
+    {tab === "drivers"  && <DriversTab jobs={jobs.filter(j => j.status !== "cancelled")} drivers={drivers} viewDay={viewDay} hpd={hpd} onExportCSV={exportCSV} />}
+    {tab === "metrics"  && <MetricsTab jobs={jobs} drivers={drivers} viewDay={viewDay} hpd={hpd} staffing={staffing} filtDriverCount={drivers.length} />}
     {tab === "history"  && <HistoryTab jobs={jobs} drivers={drivers} />}
     {tab === "settings" && <SettingsTab
       yards={yards}
