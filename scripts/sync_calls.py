@@ -13,7 +13,7 @@ jobs for the current day, and so the History tab has a complete record.
 """
 
 import os, re, uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from playwright.sync_api import sync_playwright
 from supabase import create_client
 
