@@ -312,12 +312,26 @@ function DriversTab({ jobs, drivers, viewDay, hpd, onExportCSV }) {
     return ["ALL", ...fs];
   }, [drivers]);
 
+  const [drvSearch, setDrvSearch] = React.useState("");
+
   const visDrivers = React.useMemo(() => {
     let out = drivers;
     if (drvYard !== "ALL") out = out.filter(d => d.yard === drvYard);
     if (drvFunc !== "ALL") out = out.filter(d => d.func === drvFunc);
+    if (drvSearch.trim()) {
+      const q = drvSearch.trim().toLowerCase();
+      out = out.filter(d => dLb(d).toLowerCase().includes(q));
+    }
+    // Sort: most hours first, then alphabetical for 0-hour drivers
+    const dayJ = jobs.filter(j => j.day === viewDay && j.status !== "cancelled");
+    out = [...out].sort((a, b) => {
+      const aH = dayJ.filter(j => j.driverId === a.id).reduce((s, j) => s + jobTotal(j), 0);
+      const bH = dayJ.filter(j => j.driverId === b.id).reduce((s, j) => s + jobTotal(j), 0);
+      if (aH !== bH) return aH - bH; // fewest hours first
+      return dLb(a).localeCompare(dLb(b)); // alphabetical for equal hours
+    });
     return out;
-  }, [drivers, drvYard, drvFunc]);
+  }, [drivers, drvYard, drvFunc, drvSearch, jobs, viewDay]);
 
   const yardLabel = id => YARDS.find(y => y.id === id)?.short || id;
 
@@ -342,6 +356,11 @@ function DriversTab({ jobs, drivers, viewDay, hpd, onExportCSV }) {
         {f === "ALL" ? "All" : f} ({f === "ALL" ? drivers.length : drivers.filter(d => d.func === f).length})
       </button>)}
     </div>}
+
+    {/* Driver search */}
+    <div style={{ marginBottom: 10 }}>
+      <input style={{ ...iS, width: "100%", maxWidth: 300 }} placeholder="Search drivers..." value={drvSearch} onChange={e => setDrvSearch(e.target.value)} />
+    </div>
 
     {visDrivers.map(d => {
       const dj      = dayJobs.filter(j => j.driverId === d.id);
@@ -548,55 +567,130 @@ function HistoryTab({ jobs, drivers }) {
 }
 
 // ── MetricsTab ──────────────────────────────────
-function MetricsTab({ jobs, drivers, viewDay, hpd, staffing, filtDriverCount }) {
-  const week       = genDays(7);
-  const activeJobs = jobs.filter(j => j.status !== "cancelled");
+function MetricsTab({ jobs, drivers, viewDay, hpd, staffing, locLabel }) {
+  // ── Time range selector ──────────────────────────
+  const [range, setRange] = React.useState("7d");
+  const rangeOpts = [["7d", "7 Days"], ["14d", "14 Days"], ["30d", "30 Days"], ["all", "All Time"]];
 
+  // ── Filters (location + job type only) ────
+  const [mReason, setMReason]   = React.useState(() => new Set(["ALL"]));
+  const [mLoc, setMLoc]         = React.useState(() => new Set(["ALL"]));
+
+  const allReasons = React.useMemo(() => {
+    const s = new Set(); jobs.forEach(j => { if (j.tbReason) s.add(j.tbReason); });
+    return ["ALL", ...[...s].sort()];
+  }, [jobs]);
+
+  // ── Compute date range ───────────────────────────
+  const rangeDays = React.useMemo(() => {
+    if (range === "all") {
+      const allDays = [...new Set(jobs.map(j => j.day).filter(Boolean))].sort();
+      return allDays;
+    }
+    const n = parseInt(range);
+    const days = [];
+    for (let i = n - 1; i >= 0; i--) {
+      const d = new Date(); d.setDate(d.getDate() - i);
+      days.push(isoD(d));
+    }
+    return days;
+  }, [range, jobs]);
+
+  // ── Filter jobs ──────────────────────────────────
+  const filtJobs = React.useMemo(() => {
+    let out = jobs.filter(j => j.status !== "cancelled" && rangeDays.includes(j.day));
+    if (!mReason.has("ALL")) out = out.filter(j => mReason.has(j.tbReason || ""));
+    if (!mLoc.has("ALL")) out = out.filter(j => mLoc.has(locLabel(j.tbCallNum)));
+    return out;
+  }, [jobs, rangeDays, mReason, mLoc, locLabel]);
+
+  // ── Driver stats (historical) ────────────────────
   const driverStats = drivers.map(d => {
-    const dj        = activeJobs.filter(j => j.driverId === d.id);
-    const weekJobs  = dj.filter(j => week.includes(j.day));
-    const totalH    = weekJobs.reduce((s, j) => s + jobTotal(j), 0);
-    const totalMi   = weekJobs.reduce((s, j) => s + jobMiles(j), 0);
-    const completed = weekJobs.filter(j => j.status === "complete").length;
-    return { ...d, weekJobs: weekJobs.length, weekH: totalH, weekMi: totalMi, completed, utilPct: hpd * 5 > 0 ? totalH / (hpd * 5) * 100 : 0 };
-  }).sort((a, b) => b.weekH - a.weekH);
+    const dj        = filtJobs.filter(j => j.driverId === d.id);
+    const totalH    = dj.reduce((s, j) => s + jobTotal(j), 0);
+    const totalMi   = dj.reduce((s, j) => s + jobMiles(j), 0);
+    const completed = dj.filter(j => j.status === "complete").length;
+    const actualH   = dj.filter(j => j.startedAt && j.completedAt).reduce((s, j) => s + (new Date(j.completedAt) - new Date(j.startedAt)) / 3600000, 0);
+    const workDays  = Math.max(rangeDays.length, 1);
+    const capH      = hpd * workDays;
+    return { ...d, totalJobs: dj.length, totalH, totalMi, completed, actualH, utilPct: capH > 0 ? totalH / capH * 100 : 0, avgH: dj.length > 0 ? totalH / dj.length : 0 };
+  }).sort((a, b) => b.totalH - a.totalH);
 
+  // ── Job type breakdown ───────────────────────────
   const typeBreak   = {};
-  activeJobs.filter(j => week.includes(j.day)).forEach(j => { const r = j.tbReason || "OTHER"; typeBreak[r] = (typeBreak[r] || 0) + 1; });
+  filtJobs.forEach(j => { const r = j.tbReason || "OTHER"; typeBreak[r] = (typeBreak[r] || 0) + 1; });
   const typeEntries = Object.entries(typeBreak).sort((a, b) => b[1] - a[1]);
   const typeTotal   = typeEntries.reduce((s, e) => s + e[1], 0);
 
+  // ── Daily trend ──────────────────────────────────
   const defaultStaff = 8;
-  const weekStats = week.map(iso => {
-    const dj     = activeJobs.filter(j => j.day === iso);
-    const totalH = dj.reduce((s, j) => s + jobTotal(j), 0);
-    const staff  = staffing[iso] != null ? staffing[iso] : defaultStaff;
-    const cap    = staff * hpd;
-    return { iso, n: dj.length, totalH, cap, pct: cap > 0 ? totalH / cap * 100 : 0 };
+  const trendDays = React.useMemo(() => {
+    // Show last 7 or 14 days as bars, whichever fits
+    const show = rangeDays.slice(-Math.min(rangeDays.length, 14));
+    return show.map(iso => {
+      const dj     = filtJobs.filter(j => j.day === iso);
+      const totalH = dj.reduce((s, j) => s + jobTotal(j), 0);
+      const staff  = staffing[iso] != null ? staffing[iso] : defaultStaff;
+      const cap    = staff * hpd;
+      return { iso, n: dj.length, totalH, cap, pct: cap > 0 ? totalH / cap * 100 : 0 };
+    });
+  }, [filtJobs, rangeDays, staffing, hpd]);
+
+  // ── Aggregate metrics ────────────────────────────
+  const fleetTotalH  = driverStats.reduce((s, d) => s + d.totalH,  0);
+  const fleetTotalMi = driverStats.reduce((s, d) => s + d.totalMi, 0);
+  const fleetActualH = driverStats.reduce((s, d) => s + d.actualH, 0);
+  const fleetCapH    = rangeDays.reduce((s, iso) => { const st = staffing[iso] != null ? staffing[iso] : defaultStaff; return s + st * hpd; }, 0);
+  const fleetUtil    = fleetCapH > 0 ? fleetTotalH / fleetCapH * 100 : 0;
+  const avgJobH      = filtJobs.length > 0 ? fleetTotalH / filtJobs.length : 0;
+  const completedCount = filtJobs.filter(j => j.status === "complete").length;
+
+  // ── Toggle helper for multi-select filters ───────
+  const toggleSet = (setter, val) => setter(prev => {
+    const next = new Set(prev);
+    if (val === "ALL") return new Set(["ALL"]);
+    next.delete("ALL");
+    if (next.has(val)) next.delete(val); else next.add(val);
+    return next.size === 0 ? new Set(["ALL"]) : next;
   });
 
-  const fleetWeekH   = driverStats.reduce((s, d) => s + d.weekH,  0);
-  const fleetWeekMi  = driverStats.reduce((s, d) => s + d.weekMi, 0);
-  const fleetCapH    = week.reduce((s, iso) => { const st = staffing[iso] != null ? staffing[iso] : defaultStaff; return s + st * hpd; }, 0);
-  const fleetUtil    = fleetCapH > 0 ? fleetWeekH / fleetCapH * 100 : 0;
-  const weekJobCount = activeJobs.filter(j => week.includes(j.day)).length;
-  const avgJobH      = weekJobCount > 0 ? fleetWeekH / weekJobCount : 0;
-
   return <div>
-    <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>
-      Fleet Metrics - This Week
-      <span style={{ fontSize: 10, color: C.am, fontWeight: 600, background: C.ab, padding: "2px 8px", borderRadius: 4, marginLeft: 6 }}>WORK IN PROGRESS</span>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+      <div style={{ fontSize: 14, fontWeight: 700 }}>Driver Metrics</div>
+      <div style={{ display: "flex", gap: 4 }}>
+        {rangeOpts.map(([k, l]) => <button key={k} className={"fbtn" + (range === k ? " on" : "")} onClick={() => setRange(k)}>{l}</button>)}
+      </div>
     </div>
+
+    {/* Job type filter (multi-select) */}
+    {allReasons.length > 1 && <div className="fb" style={{ marginBottom: 6 }}>
+      <span style={{ fontSize: 9, color: C.dm, fontWeight: 600, alignSelf: "center", marginRight: 2 }}>JOB TYPE:</span>
+      {allReasons.map(r => <button key={r} className={"fbtn" + (mReason.has(r) ? " on" : "")} onClick={() => toggleSet(setMReason, r)}>
+        {r === "ALL" ? "All" : r}
+      </button>)}
+    </div>}
+
+    {/* Location filter (multi-select) */}
+    <div className="fb" style={{ marginBottom: 6 }}>
+      <span style={{ fontSize: 9, color: C.dm, fontWeight: 600, alignSelf: "center", marginRight: 2 }}>LOCATION:</span>
+      {["ALL", "NETC", "Matt Brown's", "Ray's", "Interstate"].map(loc => <button key={loc} className={"fbtn" + (mLoc.has(loc) ? " on" : "")} onClick={() => toggleSet(setMLoc, loc)}>
+        {loc === "ALL" ? "All" : loc}
+      </button>)}
+    </div>
+
+    {/* Summary cards */}
     <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8, marginBottom: 14 }}>
       <div className="dash-card" style={{ background: C.ad }}><div style={{ fontSize: 9, color: C.dm, textTransform: "uppercase", marginBottom: 3 }}>Fleet Utilization</div><div style={{ fontSize: 28, fontWeight: 800, color: fleetUtil > 80 ? C.am : C.gn }}>{Math.round(fleetUtil)}%</div></div>
-      <div className="dash-card" style={{ background: C.cd }}><div style={{ fontSize: 9, color: C.dm, textTransform: "uppercase", marginBottom: 3 }}>Total Hours</div><div style={{ fontSize: 28, fontWeight: 800, color: C.ac }}>{fD(fleetWeekH)}</div><div style={{ fontSize: 9, color: C.dm }}>of {fD(fleetCapH)} capacity</div></div>
-      <div className="dash-card" style={{ background: C.cd }}><div style={{ fontSize: 9, color: C.dm, textTransform: "uppercase", marginBottom: 3 }}>Total Miles</div><div style={{ fontSize: 28, fontWeight: 800, color: C.pu }}>{Math.round(fleetWeekMi).toLocaleString()}</div></div>
-      <div className="dash-card" style={{ background: C.cd }}><div style={{ fontSize: 9, color: C.dm, textTransform: "uppercase", marginBottom: 3 }}>Avg Job</div><div style={{ fontSize: 28, fontWeight: 800, color: C.am }}>{fH(avgJobH)}</div></div>
+      <div className="dash-card" style={{ background: C.cd }}><div style={{ fontSize: 9, color: C.dm, textTransform: "uppercase", marginBottom: 3 }}>Est Hours</div><div style={{ fontSize: 28, fontWeight: 800, color: C.ac }}>{fD(fleetTotalH)}</div>{fleetActualH > 0 && <div style={{ fontSize: 9, color: C.dm }}>Actual: {fD(fleetActualH)}</div>}</div>
+      <div className="dash-card" style={{ background: C.cd }}><div style={{ fontSize: 9, color: C.dm, textTransform: "uppercase", marginBottom: 3 }}>Total Miles</div><div style={{ fontSize: 28, fontWeight: 800, color: C.pu }}>{Math.round(fleetTotalMi).toLocaleString()}</div></div>
+      <div className="dash-card" style={{ background: C.cd }}><div style={{ fontSize: 9, color: C.dm, textTransform: "uppercase", marginBottom: 3 }}>Jobs</div><div style={{ fontSize: 28, fontWeight: 800, color: C.am }}>{filtJobs.length}</div><div style={{ fontSize: 9, color: C.gn }}>{completedCount} completed</div></div>
     </div>
-    <div style={{ ...cB, padding: 14, marginBottom: 10 }}>
-      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Weekly Capacity</div>
+
+    {/* Daily trend chart */}
+    {trendDays.length > 0 && <div style={{ ...cB, padding: 14, marginBottom: 10 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Daily Trend</div>
       <div style={{ display: "flex", gap: 6, alignItems: "flex-end", height: 100 }}>
-        {weekStats.map(s => {
+        {trendDays.map(s => {
           const h   = Math.max(s.pct, 3);
           const col = s.pct >= 90 ? C.rd : s.pct >= 70 ? C.am : C.gn;
           return <div key={s.iso} style={{ flex: 1, textAlign: "center" }}>
@@ -609,9 +703,11 @@ function MetricsTab({ jobs, drivers, viewDay, hpd, staffing, filtDriverCount }) 
           </div>;
         })}
       </div>
-    </div>
-    <div style={{ ...cB, padding: 14, marginBottom: 10 }}>
-      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Job Types This Week</div>
+    </div>}
+
+    {/* Job type breakdown */}
+    {typeEntries.length > 0 && <div style={{ ...cB, padding: 14, marginBottom: 10 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Job Types</div>
       {typeEntries.map(([type, count]) => {
         const pct = typeTotal > 0 ? count / typeTotal * 100 : 0;
         return <div key={type} style={{ marginBottom: 6 }}>
@@ -619,25 +715,29 @@ function MetricsTab({ jobs, drivers, viewDay, hpd, staffing, filtDriverCount }) 
           <div style={{ height: 6, background: C.sf, borderRadius: 3, overflow: "hidden" }}><div style={{ height: "100%", width: pct + "%", background: C.ac, borderRadius: 3 }} /></div>
         </div>;
       })}
-    </div>
+    </div>}
+
+    {/* Driver scorecards */}
     <div style={{ ...cB, padding: 14 }}>
-      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Driver Scorecards - This Week</div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 80px 80px 80px 80px 60px", gap: 4, fontSize: 10 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Driver Scorecards — {range === "all" ? "All Time" : rangeOpts.find(r => r[0] === range)?.[1]}</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 70px 70px 70px 70px 70px 60px", gap: 4, fontSize: 10 }}>
         <div style={{ fontWeight: 700, color: C.dm }}>Driver</div>
-        <div style={{ fontWeight: 700, color: C.dm, textAlign: "right" }}>Hours</div>
+        <div style={{ fontWeight: 700, color: C.dm, textAlign: "right" }}>Est Hrs</div>
+        <div style={{ fontWeight: 700, color: C.dm, textAlign: "right" }}>Act Hrs</div>
         <div style={{ fontWeight: 700, color: C.dm, textAlign: "right" }}>Miles</div>
         <div style={{ fontWeight: 700, color: C.dm, textAlign: "right" }}>Jobs</div>
         <div style={{ fontWeight: 700, color: C.dm, textAlign: "right" }}>Done</div>
-        <div style={{ fontWeight: 700, color: C.dm, textAlign: "right" }}>Util%</div>
+        <div style={{ fontWeight: 700, color: C.dm, textAlign: "right" }}>Avg Hrs</div>
         {driverStats.map(d => {
           const col = d.utilPct >= 80 ? C.am : d.utilPct >= 50 ? C.gn : C.dm;
           return <React.Fragment key={d.id}>
             <div style={{ fontWeight: 600 }}>{dLb(d)}</div>
-            <div style={{ textAlign: "right", color: C.ac }}>{fD(d.weekH)}</div>
-            <div style={{ textAlign: "right", color: C.pu }}>{Math.round(d.weekMi)}</div>
-            <div style={{ textAlign: "right" }}>{d.weekJobs}</div>
+            <div style={{ textAlign: "right", color: C.ac }}>{fD(d.totalH)}</div>
+            <div style={{ textAlign: "right", color: d.actualH > 0 ? C.pu : C.dm }}>{d.actualH > 0 ? fD(d.actualH) : "--"}</div>
+            <div style={{ textAlign: "right", color: C.pu }}>{Math.round(d.totalMi)}</div>
+            <div style={{ textAlign: "right" }}>{d.totalJobs}</div>
             <div style={{ textAlign: "right", color: C.gn }}>{d.completed}</div>
-            <div style={{ textAlign: "right", color: col, fontWeight: 700 }}>{Math.round(d.utilPct)}%</div>
+            <div style={{ textAlign: "right", color: col, fontWeight: 700 }}>{fH(d.avgH)}</div>
           </React.Fragment>;
         })}
       </div>
@@ -977,8 +1077,13 @@ function App() {
   const [fd,           setFd]           = useState("");
   const [newDr,        setNewDr]        = useState({ name: "", truck: "", yard: "exeter", func: "Transport" });
   const [newYard,      setNewYard]      = useState({ short: "", addr: "", zip: "" });
-  const [reasonFilter,   setReasonFilter]   = useState(() => LS.get('filter', "EQUIPMENT TRANSPORT"));
-  const [locationFilter, setLocationFilter] = useState("ALL");
+  const [reasonFilter,   setReasonFilter]   = useState(() => {
+    const saved = LS.get('filter', "ALL");
+    // Migrate from old single-value format
+    if (typeof saved === 'string') return new Set([saved]);
+    return new Set(saved);
+  });
+  const [locationFilter, setLocationFilter] = useState(() => new Set(["ALL"]));
   const [lastSynced,     setLastSynced]     = useState(null);
   const [ghRepo,         setGhRepo]         = useState('');
   const [ghToken,        setGhToken]        = useState('');
@@ -1160,7 +1265,7 @@ function App() {
   }, []);
 
   // Persist filter preference locally (it's per-user, not shared)
-  useEffect(() => LS.set('filter', reasonFilter), [reasonFilter]);
+  useEffect(() => LS.set('filter', [...reasonFilter]), [reasonFilter]);
 
   // Clock tick for the header timestamp
   useEffect(() => {
@@ -1408,8 +1513,8 @@ function App() {
     return [...base].sort();
   }, [jobs]);
   const filt      = (arr) => {
-    let out = reasonFilter === "ALL" ? arr : arr.filter(j => (j.tbReason || "") === reasonFilter);
-    if (locationFilter !== "ALL") out = out.filter(j => locLabel(j.tbCallNum) === locationFilter);
+    let out = reasonFilter.has("ALL") ? arr : arr.filter(j => reasonFilter.has(j.tbReason || ""));
+    if (!locationFilter.has("ALL")) out = out.filter(j => locationFilter.has(locLabel(j.tbCallNum)));
     return out;
   };
   // Default staffing = 8 unless the user has set a manual per-day override via the +/− buttons.
@@ -1469,12 +1574,7 @@ function App() {
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
         <span style={{ fontSize: 15, fontWeight: 800 }}>{fT(now)}</span>
-        <button style={{ ...bSt, fontSize: 9, color: C.rd, borderColor: "#3b1111" }} onClick={() => {
-          if (confirm("Clear ALL jobs? This affects all users.")) {
-            db.clearAllJobs().then(() => setJobs([]));
-          }
-        }}>🗑 Reset</button>
-        <button style={{ ...bSt, fontSize: 9 }} onClick={() => signOut()}>Sign Out</button>
+<button style={{ ...bSt, fontSize: 9 }} onClick={() => signOut()}>Sign Out</button>
       </div>
     </div>
 
@@ -1488,9 +1588,19 @@ function App() {
     {/* Reason filter */}
     {tab === "schedule" && allReasons.length > 1 && <div className="fb">
       <span style={{ fontSize: 9, color: C.dm, fontWeight: 600, alignSelf: "center", marginRight: 2 }}>JOB TYPE:</span>
-      {allReasons.map(r => <button key={r} className={"fbtn" + (reasonFilter === r ? " on" : "")} onClick={() => setReasonFilter(r)}>
-        {r === "ALL" ? "All" : r} ({r === "ALL" ? jobs.filter(j => j.status !== "cancelled").length : jobs.filter(j => j.tbReason === r && j.status !== "cancelled").length})
-      </button>)}
+      {allReasons.map(r => {
+        const isOn = reasonFilter.has(r);
+        const toggle = () => setReasonFilter(prev => {
+          const next = new Set(prev);
+          if (r === "ALL") return new Set(["ALL"]);
+          next.delete("ALL");
+          if (next.has(r)) next.delete(r); else next.add(r);
+          return next.size === 0 ? new Set(["ALL"]) : next;
+        });
+        return <button key={r} className={"fbtn" + (isOn ? " on" : "")} onClick={toggle}>
+          {r === "ALL" ? "All" : r} ({r === "ALL" ? jobs.filter(j => j.status !== "cancelled").length : jobs.filter(j => j.tbReason === r && j.status !== "cancelled").length})
+        </button>;
+      })}
     </div>}
 
     {/* Location filter — derived from call number prefix */}
@@ -1500,7 +1610,15 @@ function App() {
         const count = loc === "ALL"
           ? jobs.filter(j => j.status !== "cancelled").length
           : jobs.filter(j => j.status !== "cancelled" && locLabel(j.tbCallNum) === loc).length;
-        return <button key={loc} className={"fbtn" + (locationFilter === loc ? " on" : "")} onClick={() => setLocationFilter(loc)}>
+        const isOn = locationFilter.has(loc);
+        const toggle = () => setLocationFilter(prev => {
+          const next = new Set(prev);
+          if (loc === "ALL") return new Set(["ALL"]);
+          next.delete("ALL");
+          if (next.has(loc)) next.delete(loc); else next.add(loc);
+          return next.size === 0 ? new Set(["ALL"]) : next;
+        });
+        return <button key={loc} className={"fbtn" + (isOn ? " on" : "")} onClick={toggle}>
           {loc === "ALL" ? "All" : loc} ({count})
         </button>;
       })}
@@ -1595,12 +1713,12 @@ function App() {
       {vDon.length > 0 && <div style={{ fontSize: 9, fontWeight: 700, color: C.gn, textTransform: "uppercase", letterSpacing: 1, marginTop: 5, marginBottom: 3 }}>Done ({vDon.length})</div>}
       {vDon.map(j => <JobCard key={j.id} job={j} drivers={drivers} onUpdate={u => updJob(j.id, u)} onRemove={() => rmJob(j.id)} onDayChange={setViewDay} />)}
       {vJobs.length === 0 && !showForm && <div style={{ ...cB, textAlign: "center", padding: 20, color: C.dm, fontSize: 11 }}>
-        {reasonFilter !== "ALL" ? "No " + reasonFilter + " jobs" : "No jobs"} for {dayFull(viewDay).toLowerCase()}
+        {!reasonFilter.has("ALL") ? "No " + [...reasonFilter].join(", ") + " jobs" : "No jobs"} for {dayFull(viewDay).toLowerCase()}
       </div>}
     </>}
 
     {tab === "drivers"  && <DriversTab jobs={jobs.filter(j => j.status !== "cancelled")} drivers={drivers} viewDay={viewDay} hpd={hpd} onExportCSV={exportCSV} />}
-    {tab === "metrics"  && <MetricsTab jobs={jobs} drivers={drivers} viewDay={viewDay} hpd={hpd} staffing={staffing} filtDriverCount={drivers.length} />}
+    {tab === "metrics"  && <MetricsTab jobs={jobs} drivers={drivers} viewDay={viewDay} hpd={hpd} staffing={staffing} locLabel={locLabel} />}
     {tab === "history"  && <HistoryTab jobs={jobs} drivers={drivers} />}
     {tab === "settings" && <SettingsTab
       yards={yards}
