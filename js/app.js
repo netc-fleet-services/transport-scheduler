@@ -114,7 +114,7 @@ function LoginScreen() {
 // ── JobCard ─────────────────────────────────────
 // Displays a single job: route legs, time/distance, driver assignment,
 // priority, status controls, notes, and extra stop management.
-function JobCard({ job, drivers, onUpdate, onRemove }) {
+function JobCard({ job, drivers, onUpdate, onRemove, onDayChange }) {
   const yard  = YARDS.find(y => y.id === job.yardId) || YARDS[0];
   const stops = job.stops || [];
 
@@ -196,7 +196,7 @@ function JobCard({ job, drivers, onUpdate, onRemove }) {
           type="date"
           style={{ ...iS, fontSize: 10, padding: "2px 5px", width: 120 }}
           value={job.day || ""}
-          onChange={e => { if (e.target.value) onUpdate({ day: e.target.value }); }}
+          onChange={e => { if (e.target.value) { onUpdate({ day: e.target.value }); onDayChange(e.target.value); } }}
           title="Override the day this job appears on"
         />
       </div>
@@ -1402,7 +1402,11 @@ function App() {
   const DRIVER_FUNCTIONS = ["Transport", "Heavy Duty Towing", "Road Service", "Light Duty Towing"];
 
 
-  const calDays   = useMemo(() => genDays(21), []);
+  const calDays   = useMemo(() => {
+    const base = new Set(genDays(21));
+    jobs.forEach(j => { if (j.day && j.status !== "cancelled") base.add(j.day); });
+    return [...base].sort();
+  }, [jobs]);
   const filt      = (arr) => {
     let out = reasonFilter === "ALL" ? arr : arr.filter(j => (j.tbReason || "") === reasonFilter);
     if (locationFilter !== "ALL") out = out.filter(j => locLabel(j.tbCallNum) === locationFilter);
@@ -1585,11 +1589,11 @@ function App() {
       </div>}
 
       {vAct.length > 0 && <div style={{ fontSize: 9, fontWeight: 700, color: C.am, textTransform: "uppercase", letterSpacing: 1, marginBottom: 3, animation: "pulse 2s infinite" }}>Active ({vAct.length})</div>}
-      {vAct.map(j => <JobCard key={j.id} job={j} drivers={drivers} onUpdate={u => updJob(j.id, u)} onRemove={() => rmJob(j.id)} />)}
+      {vAct.map(j => <JobCard key={j.id} job={j} drivers={drivers} onUpdate={u => updJob(j.id, u)} onRemove={() => rmJob(j.id)} onDayChange={setViewDay} />)}
       {vSch.length > 0 && <div style={{ fontSize: 9, fontWeight: 700, color: C.ac, textTransform: "uppercase", letterSpacing: 1, marginTop: vAct.length ? 5 : 0, marginBottom: 3 }}>Scheduled ({vSch.length})</div>}
-      {vSch.map(j => <JobCard key={j.id} job={j} drivers={drivers} onUpdate={u => updJob(j.id, u)} onRemove={() => rmJob(j.id)} />)}
+      {vSch.map(j => <JobCard key={j.id} job={j} drivers={drivers} onUpdate={u => updJob(j.id, u)} onRemove={() => rmJob(j.id)} onDayChange={setViewDay} />)}
       {vDon.length > 0 && <div style={{ fontSize: 9, fontWeight: 700, color: C.gn, textTransform: "uppercase", letterSpacing: 1, marginTop: 5, marginBottom: 3 }}>Done ({vDon.length})</div>}
-      {vDon.map(j => <JobCard key={j.id} job={j} drivers={drivers} onUpdate={u => updJob(j.id, u)} onRemove={() => rmJob(j.id)} />)}
+      {vDon.map(j => <JobCard key={j.id} job={j} drivers={drivers} onUpdate={u => updJob(j.id, u)} onRemove={() => rmJob(j.id)} onDayChange={setViewDay} />)}
       {vJobs.length === 0 && !showForm && <div style={{ ...cB, textAlign: "center", padding: 20, color: C.dm, fontSize: 11 }}>
         {reasonFilter !== "ALL" ? "No " + reasonFilter + " jobs" : "No jobs"} for {dayFull(viewDay).toLowerCase()}
       </div>}

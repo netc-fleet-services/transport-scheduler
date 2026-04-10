@@ -10,6 +10,7 @@ body {
   color: #e4e4e7;
 }
 input, select, button, textarea { font-family: inherit }
+input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(1); cursor: pointer; }
 
 /* --- Scrollbar --- */
 ::-webkit-scrollbar { width: 5px; height: 5px }
