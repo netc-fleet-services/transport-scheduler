@@ -1396,9 +1396,6 @@ function App() {
       done:   dj.filter(j => j.status === "complete").length };
   }
 
-  const impByDay = useMemo(() => { if (!impData) return {}; const m = {}; impData.forEach((d, i) => { const k = d.day; if (!m[k]) m[k] = []; m[k].push({ ...d, oi: i }); }); return m; }, [impData]);
-  const impStats = useMemo(() => { if (!impData) return null; const nw = impData.filter(d => d.include && !d.dup); return { n: nw.length, dp: impData.filter(d => d.dup).length, h: nw.reduce((s, d) => s + d.jt.total, 0) }; }, [impData]);
-
   const vs    = daySt(viewDay);
   const vJobs = filt(dayJobMap[viewDay] || []);
   const vAct  = vJobs.filter(j => j.status === "active");
