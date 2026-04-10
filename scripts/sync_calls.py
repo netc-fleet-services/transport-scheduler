@@ -206,7 +206,7 @@ def sync_to_supabase(tb_calls):
     resp = sb.from_("jobs") \
              .select("id, tb_call_num, tb_desc, tb_account, pickup_addr, drop_addr, "
                      "pickup_zip, drop_zip, tb_scheduled, tb_reason, tb_driver, day, "
-                     "yard_id, driver_id, status, priority, notes, stops") \
+                     "yard_id, driver_id, status, priority, notes, stops, added_at") \
              .execute()
 
     existing = {r["tb_call_num"]: r for r in (resp.data or []) if r.get("tb_call_num")}
@@ -239,6 +239,7 @@ def sync_to_supabase(tb_calls):
         if ex:
             # Existing record — carry forward all dispatcher-managed fields
             row["id"]        = ex["id"]
+            row["added_at"]  = ex["added_at"]
             row["yard_id"]   = ex["yard_id"]
             row["driver_id"] = ex["driver_id"]
             row["status"]    = ex["status"]
