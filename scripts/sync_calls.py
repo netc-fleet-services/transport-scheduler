@@ -171,6 +171,15 @@ def scrape_calls():
                 elif lbl == 'Destination':   drop    = val
                 elif lbl == 'Account':       account = val
 
+            # Equipment lives in a standalone .text[columnid='6'] (not inside ul.details1).
+            # If the labeled "Truck" capture above didn't find it, fall back to columnid.
+            if not truck:
+                eq_el = row.locator(".text[columnid='6']")
+                if eq_el.count():
+                    truck = (eq_el.first.get_attribute("title") or
+                             eq_el.first.text_content() or '').strip()
+                    truck = re.sub(r'\s+', ' ', truck).strip()
+
             pickup = parse_addr(pickup)
             drop   = parse_addr(drop)
             day    = sched_to_day(sched) if sched else date.today().isoformat()
@@ -202,7 +211,7 @@ def sync_to_supabase(tb_calls):
     # Load ALL existing jobs (no status filter) to preserve all fields
     resp = sb.from_("jobs") \
              .select("id, tb_call_num, tb_desc, tb_account, pickup_addr, drop_addr, "
-                     "pickup_zip, drop_zip, tb_scheduled, tb_reason, tb_driver, day, "
+                     "pickup_zip, drop_zip, tb_scheduled, tb_reason, tb_driver, truck_and_equipment, day, "
                      "yard_id, driver_id, status, priority, notes, stops, added_at") \
              .execute()
 
@@ -229,6 +238,7 @@ def sync_to_supabase(tb_calls):
             "tb_scheduled": keep(call["scheduled"], "tb_scheduled"),
             "tb_reason":    keep(call["reason"],    "tb_reason"),
             "tb_driver":    keep(call["driver"],    "tb_driver"),
+            "truck_and_equipment": keep(call["truck"], "truck_and_equipment"),
             "day":          keep(call["day"],       "day"),
             "updated_at":   now,
         }
