@@ -171,6 +171,7 @@ function JobCard({ job, drivers, onUpdate, onRemove, onDayChange }) {
       <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
         <div className="pri" style={{ background: PRI_COLORS[pri] }} title={pri} />
         {job.tbCallNum && <span style={{ fontSize: 15, fontWeight: 800, color: C.pu }}>{job.tbCallNum}</span>}
+        {job.tbTruck   && <span style={{ fontSize: 10, fontWeight: 700, color: C.am, background: C.ab, padding: "1px 6px", borderRadius: 10 }}>{job.tbTruck}</span>}
         {job.tbAccount && <span style={{ fontSize: 12, fontWeight: 700, color: C.ac }}>{job.tbAccount}</span>}
         {job.tbDesc    && <span style={{ fontSize: 10, fontWeight: 600, color: C.tx, background: C.sf, padding: "1px 6px", borderRadius: 10 }}>{job.tbDesc.trim()}</span>}
         {job.tbReason  && <span style={{ fontSize: 9, color: C.dm, background: C.sf, padding: "1px 6px", borderRadius: 10 }}>{job.tbReason}</span>}
@@ -395,8 +396,9 @@ function DriversTab({ jobs, drivers, viewDay, hpd, onExportCSV }) {
           const totalH = dj.reduce((s, j) => { const t = jobTotal(j); return s + (isFinite(t) && t > 0 ? t : 1); }, 0);
           const innerW = Math.max(totalH, hpd) * PX_HR;
           return (
+            <React.Fragment>
             <div style={{ overflowX: "auto", borderRadius: 6 }}>
-              <div style={{ position: "relative", height: 36 * dj.length, width: innerW, background: C.sf, borderRadius: 6 }}>
+              <div style={{ position: "relative", height: 32 * dj.length, width: innerW, background: C.sf, borderRadius: 6 }}>
                 {dj.map((j, idx) => {
                   const jh      = jobTotal(j);
                   const safeH   = isFinite(jh) && jh > 0 ? jh : 1;
@@ -404,7 +406,8 @@ function DriversTab({ jobs, drivers, viewDay, hpd, onExportCSV }) {
                   const puN     = j.pickupAddr ? cityFrom(j.pickupAddr) : (lz(j.pickupZip)?.label || "?");
                   const drNN    = j.dropAddr   ? cityFrom(j.dropAddr)   : (lz(j.dropZip)?.label   || "?");
                   const barCol  = j.status === "active" ? C.am : j.status === "complete" ? C.gn : C.ac;
-                  return <div key={j.id} className="gantt-bar" style={{ top: idx * 36 + 4, left: startH * PX_HR, width: safeH * PX_HR, background: barCol + "33", border: "1px solid " + barCol, color: C.tx }}>
+                  const tipText = `${j.tbCallNum || ""}${j.tbTruck ? " · " + j.tbTruck : ""}\n${puN} → ${drNN}\n${fH(jh)}`;
+                  return <div key={j.id} className="gantt-bar" title={tipText} style={{ top: idx * 32 + 4, left: startH * PX_HR, width: safeH * PX_HR, background: barCol + "33", border: "1px solid " + barCol, color: C.tx }}>
                     <span style={{ color: C.pu, fontWeight: 800, marginRight: 4 }}>{j.tbCallNum || "?"}</span>
                     {puN} → {drNN}
                     <span style={{ marginLeft: "auto", color: barCol, fontWeight: 700, paddingLeft: 4 }}>{fH(jh)}</span>
@@ -412,6 +415,16 @@ function DriversTab({ jobs, drivers, viewDay, hpd, onExportCSV }) {
                 })}
               </div>
             </div>
+            <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 3 }}>
+              {dj.map(j => (
+                <div key={j.id} style={{ fontSize: 11, color: C.tx, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ color: C.pu, fontWeight: 800 }}>{j.tbCallNum || '?'}</span>
+                  <span style={{ color: C.dm }}>—</span>
+                  <span style={{ color: j.tbTruck ? C.am : C.dm, fontWeight: j.tbTruck ? 700 : 400 }}>{j.tbTruck || 'No equipment'}</span>
+                </div>
+              ))}
+            </div>
+            </React.Fragment>
           );
         })()}
         {dj.length === 0 && <div style={{ fontSize: 11, color: C.dm, textAlign: "center", padding: 10 }}>No jobs assigned</div>}
@@ -961,15 +974,16 @@ function OptimizerModal({ state, drivers, onUpdate, onApply, onClose }) {
                   return (
                     <div key={job.id}>
                       {dh !== null && <div style={{ fontSize:10, color:C.dm, paddingLeft:8, margin:'2px 0' }}>↓ {dh}mi empty</div>}
-                      <div style={{ padding:'7px 10px', background:C.sf, borderRadius:5, marginBottom:4 }}>
-                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:8, marginBottom:4 }}>
+                      <div style={{ padding:'12px 14px', background:C.sf, borderRadius:5, marginBottom:6 }}>
+                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:8, marginBottom:6 }}>
                           <div style={{ flex:1, minWidth:0 }}>
-                            <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap', marginBottom:2 }}>
-                              {job.tbCallNum && <span style={{ fontSize:13, fontWeight:800, color:C.pu }}>{job.tbCallNum}</span>}
+                            <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap', marginBottom:4 }}>
+                              {job.tbCallNum && <span style={{ fontSize:14, fontWeight:800, color:C.pu }}>{job.tbCallNum}</span>}
                               {job.tbAccount && <span style={{ fontSize:12, fontWeight:600, color:C.ac }}>{job.tbAccount}</span>}
                               {job.tbDesc && <span style={{ fontSize:11, color:C.dm }}>{job.tbDesc.trim()}</span>}
                             </div>
-                            <div style={{ fontSize:12, color:C.tx }}>{puN} → {drN}</div>
+                            {job.tbTruck && <div style={{ fontSize:11, fontWeight:700, color:C.am, background:C.ab, padding:'2px 8px', borderRadius:10, display:'inline-block', marginBottom:5 }}>{job.tbTruck}</div>}
+                            <div style={{ fontSize:13, color:C.tx, lineHeight:1.4 }}>{puN} → {drN}</div>
                           </div>
                           <span style={{ fontSize:13, fontWeight:700, color:C.am, whiteSpace:'nowrap' }}>{fH(jobTotal(job))}</span>
                         </div>
@@ -1006,6 +1020,7 @@ function OptimizerModal({ state, drivers, onUpdate, onApply, onClose }) {
                       <div style={{ flex:1, minWidth:0 }}>
                         <div style={{ display:'flex', alignItems:'center', gap:6, flexWrap:'wrap', marginBottom:2 }}>
                           {job.tbCallNum && <span style={{ fontSize:13, fontWeight:800, color:C.pu }}>{job.tbCallNum}</span>}
+                          {job.tbTruck   && <span style={{ fontSize:10, fontWeight:700, color:C.am, background:C.ab, padding:'1px 6px', borderRadius:10 }}>{job.tbTruck}</span>}
                           {job.tbAccount && <span style={{ fontSize:12, fontWeight:600, color:C.ac }}>{job.tbAccount}</span>}
                         </div>
                         <div style={{ fontSize:12, color:C.tx }}>{puN} → {drN}</div>
@@ -1023,6 +1038,101 @@ function OptimizerModal({ state, drivers, onUpdate, onApply, onClose }) {
                 );
               })}
             </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── findPossibleStacks ───────────────────────────
+// For each scheduled job A with a drop location, find other scheduled
+// jobs B whose pickup is within `maxMi` of A's drop — i.e. jobs the
+// A-driver could grab on the way back. Drop→pickup only (never
+// pickup→pickup: equipment may not fit on the same truck).
+function findPossibleStacks(dayJobs, drivers, maxMi) {
+  const drvById = Object.fromEntries(drivers.map(d => [d.id, d]));
+  const active  = dayJobs.filter(j => j.status !== 'cancelled' && j.status !== 'complete');
+  let skipped   = 0;
+  const results = [];
+
+  for (const a of active) {
+    const aDrop = crd(a.dropAddr, a.dropZip);
+    if (!aDrop) { skipped++; continue; }
+
+    for (const b of active) {
+      if (a.id === b.id) continue;
+      if (a.driverId && b.driverId && a.driverId === b.driverId) continue;
+      const bPick = crd(b.pickupAddr, b.pickupZip);
+      if (!bPick) continue;
+
+      const dist = dMi(aDrop, bPick);
+      if (dist <= maxMi) {
+        results.push({
+          a, b, dist,
+          aDriver: a.driverId ? drvById[a.driverId] : null,
+          bDriver: b.driverId ? drvById[b.driverId] : null,
+          city:    cityFrom(b.pickupAddr) || lz(b.pickupZip)?.label || b.pickupZip || '?',
+        });
+      }
+    }
+  }
+
+  results.sort((x, y) => x.dist - y.dist);
+  return { results: results.slice(0, 30), skipped };
+}
+
+// ── PossibleStackingModal ────────────────────────
+// Suggestion list shown when the dispatcher clicks "🔗 Possible Stacking".
+function PossibleStackingModal({ data, onClose, onIgnore }) {
+  if (!data) return null;
+  const { results, skipped } = data;
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.7)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center', padding:20 }} onClick={onClose}>
+      <div style={{ ...cB, background:C.cd, maxWidth:720, width:'100%', maxHeight:'85vh', overflowY:'auto', padding:16 }} onClick={e => e.stopPropagation()}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
+          <div>
+            <div style={{ fontSize:14, fontWeight:800, color:C.pu }}>🔗 Possible Stacking</div>
+            <div style={{ fontSize:10, color:C.dm }}>Drop → pickup matches within 15mi. Suggestions only — review before acting.</div>
+          </div>
+          <button style={bSt} onClick={onClose}>Close</button>
+        </div>
+
+        {results.length === 0 && (
+          <div style={{ fontSize:12, color:C.dm, padding:20, textAlign:'center' }}>
+            No stacking opportunities found for this day.
+          </div>
+        )}
+
+        {results.map((m, i) => (
+          <div key={i} style={{ border:'1px solid '+C.bd, borderRadius:6, padding:10, marginBottom:6, background:C.sf }}>
+            <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:4 }}>
+              <span style={{ fontSize:14, fontWeight:800, color:C.am, minWidth:50 }}>{Math.round(m.dist)}mi</span>
+              <span style={{ fontSize:11, color:C.dm, flex:1 }}>near <strong style={{ color:C.tx }}>{m.city}</strong></span>
+              <button style={{ ...bSt, fontSize:10, padding:'2px 8px', color:C.dm, borderColor:C.bd }} onClick={() => onIgnore(m)} title="Hide this suggestion">Ignore</button>
+            </div>
+            <div style={{ fontSize:11, color:C.tx, marginLeft:60, marginBottom:3 }}>
+              <span style={{ color:C.pu, fontWeight:800 }}>{m.a.tbCallNum || '?'}</span>
+              {m.a.tbTruck && <span style={{ color:C.am, fontWeight:700, fontSize:9, background:C.ab, padding:'1px 6px', borderRadius:8, marginLeft:5 }}>{m.a.tbTruck}</span>}
+              <span style={{ color:C.ac, marginLeft:5 }}>{dayFull(m.a.day)}{m.a.tbScheduled ? ' · ' + m.a.tbScheduled : ''}</span>
+              <span style={{ color:C.dm }}> — drops in </span>
+              <span>{cityFrom(m.a.dropAddr) || lz(m.a.dropZip)?.label || '?'}</span>
+              <span style={{ color:C.dm }}> — {m.aDriver ? m.aDriver.name : <em>unassigned</em>}</span>
+            </div>
+            <div style={{ fontSize:11, color:C.tx, marginLeft:60 }}>
+              <span style={{ color:C.pu, fontWeight:800 }}>{m.b.tbCallNum || '?'}</span>
+              {m.b.tbTruck && <span style={{ color:C.am, fontWeight:700, fontSize:9, background:C.ab, padding:'1px 6px', borderRadius:8, marginLeft:5 }}>{m.b.tbTruck}</span>}
+              <span style={{ color:C.ac, marginLeft:5 }}>{dayFull(m.b.day)}{m.b.tbScheduled ? ' · ' + m.b.tbScheduled : ''}</span>
+              <span style={{ color:C.dm }}> — picks up in </span>
+              <span>{m.city}</span>
+              <span style={{ color:C.dm }}> — {m.bDriver ? m.bDriver.name : <em>unassigned</em>}</span>
+            </div>
+          </div>
+        ))}
+
+        {skipped > 0 && (
+          <div style={{ fontSize:10, color:C.dm, textAlign:'center', marginTop:8 }}>
+            {skipped} job{skipped === 1 ? '' : 's'} skipped (drop address not geocoded yet)
           </div>
         )}
       </div>
@@ -1091,6 +1201,8 @@ function App() {
   const [showOptimizer,  setShowOptimizer]  = useState(false);
   const [optState,       setOptState]       = useState(null);
   const [jobToasts,      setJobToasts]      = useState([]);
+  const [showStacking,   setShowStacking]   = useState(false);
+  const [ignoredStacks,  setIgnoredStacks]  = useState(() => new Set());
 
   // Refs so Realtime callbacks (which close over initial state) always see current values
   const jobsRef    = React.useRef([]);
@@ -1551,6 +1663,19 @@ function App() {
   const vDon  = vJobs.filter(j => j.status === "complete");
   const stCol = vs.pct >= 90 ? C.rd : vs.pct >= 75 ? C.am : C.gn;
 
+  const stacks = React.useMemo(() => {
+    const raw = findPossibleStacks(vJobs, drivers, 15);
+    return {
+      results: raw.results.filter(m => !ignoredStacks.has(m.a.id + '|' + m.b.id)),
+      skipped: raw.skipped,
+    };
+  }, [vJobs, drivers, ignoredStacks]);
+  const ignoreStack = m => setIgnoredStacks(prev => {
+    const next = new Set(prev);
+    next.add(m.a.id + '|' + m.b.id);
+    return next;
+  });
+
   // ── Loading state ───────────────────────────────
   if (!loaded) return (
     <div style={{ background: C.bg, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -1679,7 +1804,8 @@ function App() {
         <button style={{ ...bSt, color: C.pu, borderColor: C.pu, opacity: syncStatus === 'triggering' ? 0.5 : 1 }} onClick={triggerSync} disabled={syncStatus === 'triggering'}>🔄 Sync TowBook</button>
         <div style={{ display: "flex", gap: 6 }}>
           {vJobs.length > 0 && <button style={{ ...bSt, color: C.gn, borderColor: C.gn }} onClick={() => exportCSV(vJobs, "schedule-" + viewDay + ".csv")}>⬇ CSV</button>}
-          {vSch.length > 0 && <button style={{ ...bSt, color: C.gn, borderColor: C.gn }} onClick={runOptimizer}>⚡ Optimize Day</button>}
+          {false && vSch.length > 0 && <button style={{ ...bSt, color: C.gn, borderColor: C.gn }} onClick={runOptimizer}>⚡ Optimize Day</button>}
+          {vJobs.length > 0 && <button style={{ ...bSt, color: C.am, borderColor: C.am, opacity: stacks.results.length ? 1 : 0.5 }} onClick={() => setShowStacking(true)} disabled={stacks.results.length === 0}>🔗 Possible Stacking ({stacks.results.length})</button>}
           <button style={bP} onClick={() => setShowForm(!showForm)}>{showForm ? "Cancel" : "+ Add Job"}</button>
         </div>
       </div>
@@ -1752,6 +1878,9 @@ function App() {
         onClose={() => { setShowOptimizer(false); setOptState(null); }}
       />
     )}
+
+    {/* Possible Stacking modal */}
+    {showStacking && <PossibleStackingModal data={stacks} onClose={() => setShowStacking(false)} onIgnore={ignoreStack} />}
 
     {/* New-job stacking toasts */}
     <NewJobToast

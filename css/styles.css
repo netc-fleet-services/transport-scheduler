@@ -56,7 +56,7 @@ select option { background: #1a1d27; color: #e4e4e7 }
 
 /* --- Gantt Bar (Driver timeline) --- */
 .gantt-bar {
-  height: 28px; border-radius: 4px; display: flex; align-items: center;
+  height: 24px; border-radius: 4px; display: flex; align-items: center;
   padding: 0 6px; font-size: 10px; font-weight: 600;
   position: absolute; overflow: hidden; white-space: nowrap;
 }
