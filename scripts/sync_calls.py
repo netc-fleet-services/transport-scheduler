@@ -95,16 +95,15 @@ def scrape_calls():
         # Login (same mechanism as sync_impounds.py)
         print("Logging into TowBook...")
         page.goto("https://app.towbook.com/Security/Login.aspx")
-        page.wait_for_load_state("networkidle")
+        page.wait_for_selector("#Username", timeout=30_000)
         page.evaluate(f'document.getElementById("Username").value = "{TOWBOOK_USER}"')
         page.evaluate(f'document.getElementById("Password").value = "{TOWBOOK_PASS}"')
         page.locator('button[name="bSignIn"]').click()
-        page.wait_for_load_state("networkidle")
+        page.wait_for_selector("ul.tab-list", timeout=45_000)
 
         # Navigate to dispatch/calls page
         print(f"Navigating to {DISPATCH_URL}...")
         page.goto(DISPATCH_URL)
-        page.wait_for_load_state("networkidle")
 
         # Wait for the tab bar to be present, then click the Scheduled tab.
         # All call categories load on the same URL; clicking a tab filters the
