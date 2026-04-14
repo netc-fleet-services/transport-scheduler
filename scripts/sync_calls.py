@@ -12,7 +12,8 @@ but are intentionally kept in Supabase so dispatchers can still see in-progress
 jobs for the current day, and so the History tab has a complete record.
 """
 
-import os, re, uuid
+import os, re, uuid, time, json
+import urllib.request, urllib.parse
 from datetime import date, datetime, timezone
 from playwright.sync_api import sync_playwright
 from supabase import create_client
@@ -81,6 +82,49 @@ def sched_to_day(sched):
         except ValueError:
             continue
     return date.today().isoformat()
+
+# ── Geocoding (Nominatim / OpenStreetMap) ──────────────────────────────────────
+# Free, 1 req/sec limit per their TOS. Requires a descriptive User-Agent.
+# Results are cached in-process so each distinct address is fetched at most once
+# per run, and in Supabase forever (the lat/lon columns on jobs).
+
+NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+_geo_cache_mem = {}
+_geo_last_req  = [0.0]
+
+def geocode(addr):
+    """Return (lat, lon) for an address, or (None, None) on failure. Rate-limited."""
+    if not addr:
+        return None, None
+    if addr in _geo_cache_mem:
+        return _geo_cache_mem[addr]
+
+    # Enforce ≥1.1s between requests (Nominatim TOS: 1/sec)
+    elapsed = time.time() - _geo_last_req[0]
+    if elapsed < 1.1:
+        time.sleep(1.1 - elapsed)
+
+    try:
+        url = NOMINATIM_URL + "?" + urllib.parse.urlencode({
+            "q": addr, "format": "json", "limit": "1",
+            "countrycodes": "us",
+        })
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "transport-scheduler-sync/1.0 (ops@netruckcenter.com)",
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+        _geo_last_req[0] = time.time()
+        if data:
+            lat = float(data[0]["lat"])
+            lon = float(data[0]["lon"])
+            _geo_cache_mem[addr] = (lat, lon)
+            return lat, lon
+    except Exception as e:
+        print(f"  geocode fail for {addr!r}: {e}")
+
+    _geo_cache_mem[addr] = (None, None)
+    return None, None
 
 # ── TowBook scraping ───────────────────────────────────────────────────────────
 
@@ -211,7 +255,8 @@ def sync_to_supabase(tb_calls):
     # Load ALL existing jobs (no status filter) to preserve all fields
     resp = sb.from_("jobs") \
              .select("id, tb_call_num, tb_desc, tb_account, pickup_addr, drop_addr, "
-                     "pickup_zip, drop_zip, tb_scheduled, tb_reason, tb_driver, truck_and_equipment, day, "
+                     "pickup_zip, drop_zip, pickup_lat, pickup_lon, drop_lat, drop_lon, "
+                     "tb_scheduled, tb_reason, tb_driver, truck_and_equipment, day, "
                      "yard_id, driver_id, status, priority, notes, stops, added_at") \
              .execute()
 
@@ -227,6 +272,18 @@ def sync_to_supabase(tb_calls):
             """Use the scraped value if non-empty, otherwise keep what's already in Supabase."""
             return new_val if new_val else (ex.get(field) if ex else new_val)
 
+        # Geocode pickup/drop — reuse stored coords if the address hasn't changed.
+        p_addr = call["pickup"]
+        d_addr = call["drop"]
+        if ex and ex.get("pickup_addr") == p_addr and ex.get("pickup_lat") is not None:
+            p_lat, p_lon = ex.get("pickup_lat"), ex.get("pickup_lon")
+        else:
+            p_lat, p_lon = geocode(p_addr) if p_addr else (None, None)
+        if ex and ex.get("drop_addr") == d_addr and ex.get("drop_lat") is not None:
+            d_lat, d_lon = ex.get("drop_lat"), ex.get("drop_lon")
+        else:
+            d_lat, d_lon = geocode(d_addr) if d_addr else (None, None)
+
         row = {
             "tb_call_num":  cn,
             "tb_desc":      keep(call["desc"],      "tb_desc"),
@@ -235,6 +292,10 @@ def sync_to_supabase(tb_calls):
             "drop_addr":    keep(call["drop"],      "drop_addr"),
             "pickup_zip":   keep(call["pickup_zip"],"pickup_zip"),
             "drop_zip":     keep(call["drop_zip"],  "drop_zip"),
+            "pickup_lat":   p_lat,
+            "pickup_lon":   p_lon,
+            "drop_lat":     d_lat,
+            "drop_lon":     d_lon,
             "tb_scheduled": keep(call["scheduled"], "tb_scheduled"),
             "tb_reason":    keep(call["reason"],    "tb_reason"),
             "tb_driver":    keep(call["driver"],    "tb_driver"),

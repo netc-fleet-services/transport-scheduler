@@ -86,9 +86,10 @@ function tbToISO(s) {
 //   "155 MAIN ST MILLINOCKET ME"         (no commas at all)
 function cityFrom(addr) {
   if (!addr) return "";
-  // "..., City ST[ ZIP[-4]]" — last word(s) before a 2-letter state code
-  // Handles both "Scarborough ME 04074-8718" and "Pelham  NH 03076"
-  var m = addr.match(/\b([A-Za-z]{3,})\s+([A-Za-z]{2})\s*\d{0,5}(?:-\d{4})?\s*$/);
+  // "..., City[,] ST[ ZIP[-4]]" — last word(s) before a 2-letter state code
+  // Handles "Scarborough ME 04074-8718", "Pelham  NH 03076", and
+  // "Exeter, NH 03833" (comma before state).
+  var m = addr.match(/\b([A-Za-z]{3,}),?\s+([A-Za-z]{2})\s*\d{0,5}(?:-\d{4})?\s*$/);
   if (m) return m[1] + ", " + m[2].toUpperCase();
   return "";
 }

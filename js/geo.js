@@ -200,6 +200,8 @@ function cityLookup(addr) {
 }
 
 // crd: get coordinates for a job stop. Prefers geoCache (exact), then ZIP3, then city name.
+// Used as a fallback when a job has no stored lat/lon (e.g. historical rows or
+// manually-added jobs before the Nominatim-backed sync landed).
 function crd(addr, zip) {
   if (addr && geoCache[addr]) return geoCache[addr];
   var z = lz(zip);
@@ -207,6 +209,18 @@ function crd(addr, zip) {
   var cl = cityLookup(addr);
   if (cl) return cl;
   return null;
+}
+
+// jobCrd: get coordinates for a specific job stop ('pickup' or 'drop').
+// Prefers the lat/lon stored on the job row (populated by sync_calls.py via
+// Nominatim) — street-accurate — and falls back to the coarse crd() lookup.
+function jobCrd(j, which) {
+  var lat = which === 'pickup' ? j.pickupLat : j.dropLat;
+  var lon = which === 'pickup' ? j.pickupLon : j.dropLon;
+  if (lat != null && lon != null) return { lat: lat, lon: lon, name: '' };
+  var addr = which === 'pickup' ? j.pickupAddr : j.dropAddr;
+  var zip  = which === 'pickup' ? j.pickupZip  : j.dropZip;
+  return crd(addr, zip);
 }
 
 // ── Distance Math ───────────────────────────────

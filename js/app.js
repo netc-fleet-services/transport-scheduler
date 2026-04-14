@@ -1057,13 +1057,13 @@ function findPossibleStacks(dayJobs, drivers, maxMi) {
   const results = [];
 
   for (const a of active) {
-    const aDrop = crd(a.dropAddr, a.dropZip);
+    const aDrop = jobCrd(a, 'drop');
     if (!aDrop) { skipped++; continue; }
 
     for (const b of active) {
       if (a.id === b.id) continue;
       if (a.driverId && b.driverId && a.driverId === b.driverId) continue;
-      const bPick = crd(b.pickupAddr, b.pickupZip);
+      const bPick = jobCrd(b, 'pickup');
       if (!bPick) continue;
 
       const dist = dMi(aDrop, bPick);
@@ -1084,18 +1084,24 @@ function findPossibleStacks(dayJobs, drivers, maxMi) {
 
 // ── PossibleStackingModal ────────────────────────
 // Suggestion list shown when the dispatcher clicks "🔗 Possible Stacking".
-function PossibleStackingModal({ data, onClose, onIgnore }) {
+function PossibleStackingModal({ data, radius, onRadiusChange, onClose, onIgnore }) {
   if (!data) return null;
   const { results, skipped } = data;
   return (
     <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.7)', zIndex:1000, display:'flex', alignItems:'center', justifyContent:'center', padding:20 }} onClick={onClose}>
       <div style={{ ...cB, background:C.cd, maxWidth:720, width:'100%', maxHeight:'85vh', overflowY:'auto', padding:16 }} onClick={e => e.stopPropagation()}>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10 }}>
-          <div>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:10, gap:10 }}>
+          <div style={{ flex:1 }}>
             <div style={{ fontSize:14, fontWeight:800, color:C.pu }}>🔗 Possible Stacking</div>
-            <div style={{ fontSize:10, color:C.dm }}>Drop → pickup matches within 15mi. Suggestions only — review before acting.</div>
+            <div style={{ fontSize:10, color:C.dm }}>Drop → pickup matches within {radius}mi. Suggestions only — review before acting.</div>
           </div>
-          <button style={bSt} onClick={onClose}>Close</button>
+          <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+            <label style={{ fontSize:10, color:C.dm }}>Radius:</label>
+            <select value={radius} onChange={e => onRadiusChange(Number(e.target.value))} style={{ ...sS, fontSize:11, padding:'3px 6px' }}>
+              {[5, 10, 15, 20, 25, 30, 40, 50, 75, 100].map(v => <option key={v} value={v}>{v} mi</option>)}
+            </select>
+            <button style={bSt} onClick={onClose}>Close</button>
+          </div>
         </div>
 
         {results.length === 0 && (
@@ -1202,6 +1208,7 @@ function App() {
   const [optState,       setOptState]       = useState(null);
   const [jobToasts,      setJobToasts]      = useState([]);
   const [showStacking,   setShowStacking]   = useState(false);
+  const [stackRadius,    setStackRadius]    = useState(15);
   const [ignoredStacks,  setIgnoredStacks]  = useState(() => new Set());
 
   // Refs so Realtime callbacks (which close over initial state) always see current values
@@ -1337,14 +1344,14 @@ function App() {
         // Check if this new job's pickup is close to any assigned driver's drop
         // for the current day — if so, surface a "potential stack" toast.
         if (job.day === viewDayRef.current) {
-          const pc = crd(job.pickupAddr, job.pickupZip);
+          const pc = jobCrd(job, 'pickup');
           if (pc) {
             const matches = [];
             driversRef.current.forEach(driver => {
               jobsRef.current
                 .filter(j => j.driverId === driver.id && j.day === viewDayRef.current && j.status !== 'cancelled')
                 .forEach(nearJob => {
-                  const dc = crd(nearJob.dropAddr, nearJob.dropZip);
+                  const dc = jobCrd(nearJob, 'drop');
                   if (dc) {
                     const dist = dMi(dc, pc);
                     if (dist < 25) matches.push({ driver, nearJob, dist });
@@ -1664,12 +1671,12 @@ function App() {
   const stCol = vs.pct >= 90 ? C.rd : vs.pct >= 75 ? C.am : C.gn;
 
   const stacks = React.useMemo(() => {
-    const raw = findPossibleStacks(vJobs, drivers, 15);
+    const raw = findPossibleStacks(vJobs, drivers, stackRadius);
     return {
       results: raw.results.filter(m => !ignoredStacks.has(m.a.id + '|' + m.b.id)),
       skipped: raw.skipped,
     };
-  }, [vJobs, drivers, ignoredStacks]);
+  }, [vJobs, drivers, ignoredStacks, stackRadius]);
   const ignoreStack = m => setIgnoredStacks(prev => {
     const next = new Set(prev);
     next.add(m.a.id + '|' + m.b.id);
@@ -1880,7 +1887,7 @@ function App() {
     )}
 
     {/* Possible Stacking modal */}
-    {showStacking && <PossibleStackingModal data={stacks} onClose={() => setShowStacking(false)} onIgnore={ignoreStack} />}
+    {showStacking && <PossibleStackingModal data={stacks} radius={stackRadius} onRadiusChange={setStackRadius} onClose={() => setShowStacking(false)} onIgnore={ignoreStack} />}
 
     {/* New-job stacking toasts */}
     <NewJobToast
