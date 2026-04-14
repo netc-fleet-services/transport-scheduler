@@ -1812,7 +1812,7 @@ function App() {
         <div style={{ display: "flex", gap: 6 }}>
           {vJobs.length > 0 && <button style={{ ...bSt, color: C.gn, borderColor: C.gn }} onClick={() => exportCSV(vJobs, "schedule-" + viewDay + ".csv")}>⬇ CSV</button>}
           {false && vSch.length > 0 && <button style={{ ...bSt, color: C.gn, borderColor: C.gn }} onClick={runOptimizer}>⚡ Optimize Day</button>}
-          {vJobs.length > 0 && <button style={{ ...bSt, color: C.am, borderColor: C.am, opacity: stacks.results.length ? 1 : 0.5 }} onClick={() => setShowStacking(true)} disabled={stacks.results.length === 0}>🔗 Possible Stacking ({stacks.results.length})</button>}
+          {vJobs.length > 0 && <button style={{ ...bSt, color: C.am, borderColor: C.am }} onClick={() => setShowStacking(true)}>🔗 Possible Stacking ({stacks.results.length})</button>}
           <button style={bP} onClick={() => setShowForm(!showForm)}>{showForm ? "Cancel" : "+ Add Job"}</button>
         </div>
       </div>
