@@ -1,5 +1,5 @@
 """
-TowBook → Supabase Scheduled Calls Sync
+TowBook → Supabase Calls Sync
 Runs every 15 minutes via GitHub Actions.
 
 Sync logic:
@@ -7,9 +7,9 @@ Sync logic:
   - Existing call (in both)                → UPDATE address/schedule fields, preserve yard/driver assignments
   - Jobs are NEVER deleted — kept for historical reporting in the History tab.
 
-Calls that move from Scheduled → Active in TowBook drop off the scraped tab
-but are intentionally kept in Supabase so dispatchers can still see in-progress
-jobs for the current day, and so the History tab has a complete record.
+Scrapes three tabs in precedence order: Scheduled → Current → Active.
+If the same call number appears in multiple tabs, the higher-precedence tab wins.
+Active has final authority since it reflects the most current in-progress state.
 """
 
 import os, re, uuid, time, json
@@ -128,15 +128,117 @@ def geocode(addr):
 
 # ── TowBook scraping ───────────────────────────────────────────────────────────
 
-def scrape_calls():
-    """Log into TowBook, navigate to the dispatch page, and extract all visible scheduled calls."""
+# Tabs to scrape, in ascending precedence order — later tabs overwrite earlier
+# ones when the same call number appears in multiple tabs.
+TABS = [
+    ("Scheduled", "#atScheduled"),
+    ("Current",   "#atCurrent"),
+    ("Active",    "#atActive"),
+]
+
+def scrape_tab(page, tab_id, tab_name):
+    """Click a dispatch tab and extract all visible call rows. Returns a list of call dicts."""
     calls = []
+
+    page.locator(tab_id).click()
+    try:
+        page.wait_for_selector(f"li.selected {tab_id}", timeout=10_000)
+    except Exception:
+        print(f"  Warning: {tab_name} tab did not become selected — scraping whatever is visible.")
+
+    page.wait_for_timeout(1_500)
+
+    all_rows = page.locator("li.entryRow").all()
+    rows = [r for r in all_rows if r.is_visible()]
+    print(f"  Found {len(rows)} rows in {tab_name} tab")
+
+    for row in rows:
+        call_num = row.get_attribute("data-call-number") or ''
+        if not call_num:
+            continue
+
+        # Vehicle description from .big-text header
+        desc = ''
+        desc_el = row.locator(".big-text")
+        if desc_el.count():
+            desc = (desc_el.first.get_attribute("title") or
+                    desc_el.first.text_content() or '').strip()
+
+        # Scheduled time — walk up from .scheduled-eta-container to its span[title]
+        sched = ''
+        eta_el = row.locator(".scheduled-eta-container")
+        if eta_el.count():
+            raw = eta_el.first.evaluate(
+                "el => { const sp = el.closest('span[title]'); return sp ? sp.getAttribute('title') : ''; }"
+            )
+            if raw:
+                paren = raw.find('(')
+                sched = raw[:paren].strip() if paren > -1 else raw.strip()
+
+        # Field values from div.title / div.text pairs inside ul.details1
+        pickup = drop = reason = driver = truck = account = ''
+        for li in row.locator("ul.details1 > li").all():
+            title_el = li.locator(".title")
+            text_el  = li.locator(".text")
+            if not title_el.count() or not text_el.count():
+                continue
+            lbl = (title_el.first.text_content() or '').strip()
+            val = (text_el.first.get_attribute("title") or
+                   text_el.first.text_content() or '').strip()
+            val = re.sub(r'\s+', ' ', val).strip()
+
+            if   lbl == 'Tow Source':    pickup  = val
+            elif lbl == 'Reason':        reason  = val
+            elif lbl == 'Driver':        driver  = val
+            elif lbl == 'Truck':         truck   = val
+            elif lbl == 'Destination':   drop    = val
+            elif lbl == 'Account':       account = val
+
+        # Equipment lives in a standalone .text[columnid='6'] (not inside ul.details1).
+        if not truck:
+            eq_el = row.locator(".text[columnid='6']")
+            if eq_el.count():
+                truck = (eq_el.first.get_attribute("title") or
+                         eq_el.first.text_content() or '').strip()
+                truck = re.sub(r'\s+', ' ', truck).strip()
+
+        pickup = parse_addr(pickup)
+        drop   = parse_addr(drop)
+        day    = sched_to_day(sched) if sched else date.today().isoformat()
+
+        if pickup or drop:
+            calls.append({
+                'call_num':   call_num,
+                'desc':       desc,
+                'account':    account,
+                'pickup':     pickup,
+                'drop':       drop,
+                'pickup_zip': extract_zip(pickup),
+                'drop_zip':   extract_zip(drop),
+                'scheduled':  sched,
+                'reason':     reason,
+                'driver':     driver,
+                'truck':      truck,
+                'day':        day,
+            })
+
+    return calls
+
+
+def scrape_calls():
+    """Log into TowBook and scrape Scheduled, Current, and Active tabs.
+
+    Tabs are scraped in ascending precedence order. When the same call number
+    appears in multiple tabs, the later tab's data overwrites the earlier one,
+    so Active always has the final say.
+    """
+    # Keyed by call_num — later tabs overwrite earlier ones for the same key.
+    merged = {}
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page    = browser.new_context().new_page()
 
-        # Login (same mechanism as sync_impounds.py)
         print("Logging into TowBook...")
         page.goto("https://app.towbook.com/Security/Login.aspx")
         page.wait_for_load_state("networkidle")
@@ -145,7 +247,6 @@ def scrape_calls():
         page.locator('button[name="bSignIn"]').click()
         page.wait_for_load_state("networkidle")
 
-        # Navigate to dispatch/calls page
         print(f"Navigating to {DISPATCH_URL}...")
         page.goto(DISPATCH_URL)
         page.wait_for_load_state("networkidle")
@@ -157,94 +258,18 @@ def scrape_calls():
             browser.close()
             return []
 
-        # Click the Scheduled tab and wait for it to become the active selection.
-        page.locator("#atScheduled").click()
-        try:
-            page.wait_for_selector("li.selected #atScheduled", timeout=10_000)
-        except Exception:
-            print("Warning: Scheduled tab did not become selected — scraping whatever is visible.")
-
-        # Give the row list a moment to re-render after the tab switch.
-        page.wait_for_timeout(1_500)
-
-        # Collect only visible (non-hidden) entryRows — the tab filter hides
-        # rows for other categories rather than removing them from the DOM.
-        all_rows = page.locator("li.entryRow").all()
-        rows = [r for r in all_rows if r.is_visible()]
-        print(f"Found {len(rows)} scheduled calls")
-
-        for row in rows:
-            call_num = row.get_attribute("data-call-number") or ''
-            if not call_num:
-                continue
-
-            # Vehicle description from .big-text header
-            desc = ''
-            desc_el = row.locator(".big-text")
-            if desc_el.count():
-                desc = (desc_el.first.get_attribute("title") or
-                        desc_el.first.text_content() or '').strip()
-
-            # Scheduled time — walk up from .scheduled-eta-container to its span[title]
-            sched = ''
-            eta_el = row.locator(".scheduled-eta-container")
-            if eta_el.count():
-                raw = eta_el.first.evaluate(
-                    "el => { const sp = el.closest('span[title]'); return sp ? sp.getAttribute('title') : ''; }"
-                )
-                if raw:
-                    paren = raw.find('(')
-                    sched = raw[:paren].strip() if paren > -1 else raw.strip()
-
-            # Field values from div.title / div.text pairs inside ul.details1
-            pickup = drop = reason = driver = truck = account = ''
-            for li in row.locator("ul.details1 > li").all():
-                title_el = li.locator(".title")
-                text_el  = li.locator(".text")
-                if not title_el.count() or not text_el.count():
-                    continue
-                lbl = (title_el.first.text_content() or '').strip()
-                val = (text_el.first.get_attribute("title") or
-                       text_el.first.text_content() or '').strip()
-                val = re.sub(r'\s+', ' ', val).strip()
-
-                if   lbl == 'Tow Source':    pickup  = val
-                elif lbl == 'Reason':        reason  = val
-                elif lbl == 'Driver':        driver  = val
-                elif lbl == 'Truck':         truck   = val
-                elif lbl == 'Destination':   drop    = val
-                elif lbl == 'Account':       account = val
-
-            # Equipment lives in a standalone .text[columnid='6'] (not inside ul.details1).
-            # If the labeled "Truck" capture above didn't find it, fall back to columnid.
-            if not truck:
-                eq_el = row.locator(".text[columnid='6']")
-                if eq_el.count():
-                    truck = (eq_el.first.get_attribute("title") or
-                             eq_el.first.text_content() or '').strip()
-                    truck = re.sub(r'\s+', ' ', truck).strip()
-
-            pickup = parse_addr(pickup)
-            drop   = parse_addr(drop)
-            day    = sched_to_day(sched) if sched else date.today().isoformat()
-
-            if pickup or drop:
-                calls.append({
-                    'call_num':   call_num,
-                    'desc':       desc,
-                    'account':    account,
-                    'pickup':     pickup,
-                    'drop':       drop,
-                    'pickup_zip': extract_zip(pickup),
-                    'drop_zip':   extract_zip(drop),
-                    'scheduled':  sched,
-                    'reason':     reason,
-                    'driver':     driver,
-                    'truck':      truck,
-                    'day':        day,
-                })
+        for tab_name, tab_id in TABS:
+            try:
+                tab_calls = scrape_tab(page, tab_id, tab_name)
+                for call in tab_calls:
+                    merged[call["call_num"]] = call
+            except Exception as e:
+                print(f"  Warning: failed to scrape {tab_name} tab — {e}")
 
         browser.close()
+
+    calls = list(merged.values())
+    print(f"Total unique calls after merge: {len(calls)}")
     return calls
 
 # ── Supabase sync ──────────────────────────────────────────────────────────────
@@ -344,7 +369,7 @@ def main():
     print(f"[{datetime.now(timezone.utc).isoformat()}Z] Starting TowBook → Supabase sync")
 
     tb_calls = scrape_calls()
-    print(f"Scraped {len(tb_calls)} calls from TowBook")
+    print(f"Scraped {len(tb_calls)} unique calls across all tabs")
 
     if not tb_calls:
         print("No calls to sync — exiting.")

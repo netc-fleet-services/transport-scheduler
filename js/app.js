@@ -910,6 +910,70 @@ function SettingsTab({ yards, onAddYard, onUpdateYard, onDeleteYard, newYard, se
   </div>;
 }
 
+// ── DriverMatchModal ────────────────────────────
+// Shown when a TowBook driver name has no exact match in the driver roster.
+// Lets the dispatcher pick an existing driver or confirm creating a new record.
+function DriverMatchModal({ item, drivers, onAssign, onCreateNew }) {
+  // item = { tbName, callNums: [], suggested: driver|null }
+  const [selected, setSelected] = useState(item.suggested ? String(item.suggested.id) : "__new__");
+
+  // Reset selection whenever the item changes (queue advances)
+  React.useEffect(() => {
+    setSelected(item.suggested ? String(item.suggested.id) : "__new__");
+  }, [item.tbName]);
+
+  const handleConfirm = () => {
+    if (selected === "__new__") {
+      onCreateNew(item.tbName, item.callNums);
+    } else {
+      const driver = drivers.find(d => String(d.id) === selected);
+      if (driver) onAssign(driver, item.callNums);
+    }
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.7)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ ...cB, width: 380, padding: 20, background: C.ca, borderColor: C.am }}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: C.am, marginBottom: 4 }}>Unmatched TowBook Driver</div>
+        <div style={{ fontSize: 11, color: C.dm, marginBottom: 14 }}>
+          No driver in the roster exactly matches the name from TowBook.
+          Choose an existing driver or create a new record.
+        </div>
+
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ fontSize: 9, color: C.dm, fontWeight: 600, marginBottom: 2 }}>TOWBOOK NAME</div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: C.tx }}>{item.tbName}</div>
+        </div>
+
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 9, color: C.dm, fontWeight: 600, marginBottom: 2 }}>AFFECTED CALL{item.callNums.length > 1 ? "S" : ""}</div>
+          <div style={{ fontSize: 11, color: C.pu, fontWeight: 700 }}>{item.callNums.join(", ")}</div>
+        </div>
+
+        {item.suggested && (
+          <div style={{ marginBottom: 10, padding: "6px 10px", background: C.ab, borderRadius: 6, border: "1px solid " + C.am }}>
+            <span style={{ fontSize: 9, color: C.am, fontWeight: 600 }}>CLOSEST MATCH: </span>
+            <span style={{ fontSize: 11, color: C.tx }}>{item.suggested.name}</span>
+          </div>
+        )}
+
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 9, color: C.dm, fontWeight: 600, marginBottom: 4 }}>ASSIGN TO</div>
+          <select style={{ ...sS, width: "100%", fontSize: 11, padding: "5px 8px" }}
+            value={selected} onChange={e => setSelected(e.target.value)}>
+            <option value="__new__">+ Create new driver "{item.tbName}"</option>
+            {drivers.map(d => <option key={d.id} value={String(d.id)}>{d.name}</option>)}
+          </select>
+        </div>
+
+        <button style={{ ...bP, width: "100%", fontSize: 12 }} onClick={handleConfirm}>
+          Confirm
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── OptimizerModal ──────────────────────────────
 // Shows greedy route suggestions for the day.
 // Dispatcher can reassign jobs via dropdowns before applying.
@@ -1229,6 +1293,7 @@ function App() {
   const [syncStatus,     setSyncStatus]     = useState(null); // null | 'triggering' | 'ok' | 'error'
   const [showOptimizer,  setShowOptimizer]  = useState(false);
   const [optState,       setOptState]       = useState(null);
+  const [driverMatchQueue, setDriverMatchQueue] = useState([]); // [{tbName, callNums, suggested}]
   const [jobToasts,      setJobToasts]      = useState([]);
   const [showStacking,   setShowStacking]   = useState(false);
   const [stackRadius,    setStackRadius]    = useState(15);
@@ -1301,32 +1366,34 @@ function App() {
         const createdDrivers = [];
 
         // One new driver record per unique unknown name
+        // Similarity score for suggestion only — shared tokens / total unique tokens
+        const nameSimilarity = (a, b) => {
+          const ta = new Set(a.toLowerCase().split(/\s+/));
+          const tb = new Set(b.toLowerCase().split(/\s+/));
+          const shared = [...ta].filter(t => tb.has(t)).length;
+          return shared / Math.max(ta.size + tb.size - shared, 1);
+        };
+        const closestDriver = (tbName, pool) =>
+          pool.reduce((best, dr) => {
+            const score = nameSimilarity(dr.name, tbName);
+            return score > best.score ? { dr, score } : best;
+          }, { dr: null, score: 0 }).dr;
+
         const uniqueNames = [...new Set(needDriverMatch.map(j => j.tbDriver))];
+        const unmatched   = []; // names with no exact match → go to dispatcher queue
         for (const tbName of uniqueNames) {
-          const dn = tbName.toLowerCase();
-          const existing = currentDrivers.find(dr =>
-            dr.name.toLowerCase() === dn ||
-            dr.name.toLowerCase().split(/\s+/).some(p => p.length > 2 && dn.includes(p))
+          const exact = currentDrivers.find(dr =>
+            dr.name.toLowerCase() === tbName.toLowerCase()
           );
-          if (!existing) {
-            const sampleJob = needDriverMatch.find(j => j.tbDriver === tbName);
-            const newId  = Math.max(0, ...currentDrivers.map(d => d.id)) + 1;
-            const newDrv = { id: newId, name: tbName, truck: '', yard: sampleJob?.yardId || YARDS[0]?.id || '' };
-            currentDrivers.push(newDrv);
-            createdDrivers.push(newDrv);
+          if (!exact) {
+            unmatched.push(tbName);
           }
         }
-        if (createdDrivers.length > 0) {
-          await Promise.all(createdDrivers.map(d => db.upsertDriver(d)));
-          fetchedDrivers = [...fetchedDrivers, ...createdDrivers];
-        }
 
-        // Match jobs to driver IDs and persist
+        // Exact matches: assign immediately and persist
         const matchedJobs = needDriverMatch.flatMap(j => {
-          const dn    = j.tbDriver.toLowerCase();
           const match = currentDrivers.find(dr =>
-            dr.name.toLowerCase() === dn ||
-            dr.name.toLowerCase().split(/\s+/).some(p => p.length > 2 && dn.includes(p))
+            dr.name.toLowerCase() === j.tbDriver.toLowerCase()
           );
           return match ? [{ ...j, driverId: match.id }] : [];
         });
@@ -1334,6 +1401,16 @@ function App() {
           await db.batchUpsertJobs(matchedJobs);
           const byId = Object.fromEntries(matchedJobs.map(j => [j.id, j]));
           fetchedJobs = fetchedJobs.map(j => byId[j.id] || j);
+        }
+
+        // Unmatched names → build dispatcher queue (one entry per unique TB name)
+        if (unmatched.length > 0) {
+          const queue = unmatched.map(tbName => ({
+            tbName,
+            callNums: needDriverMatch.filter(j => j.tbDriver === tbName).map(j => j.tbCallNum || j.id),
+            suggested: closestDriver(tbName, currentDrivers),
+          }));
+          setDriverMatchQueue(queue);
         }
       }
 
@@ -1899,6 +1976,36 @@ function App() {
       <span>Truck calibrated 1.25× road · 45 mph · +1h load · Shared via Supabase</span>
       <span>v4.0</span>
     </div>
+
+    {/* Driver match queue — shown when a TowBook driver name has no exact roster match */}
+    {driverMatchQueue.length > 0 && (
+      <DriverMatchModal
+        item={driverMatchQueue[0]}
+        drivers={drivers}
+        onAssign={async (driver, callNums) => {
+          // Assign the chosen existing driver to all affected jobs
+          const affected = jobs.filter(j => callNums.includes(j.tbCallNum || j.id) && !j.driverId);
+          const updated  = affected.map(j => ({ ...j, driverId: driver.id }));
+          await db.batchUpsertJobs(updated);
+          const byId = Object.fromEntries(updated.map(j => [j.id, j]));
+          setJobs(prev => prev.map(j => byId[j.id] || j));
+          setDriverMatchQueue(prev => prev.slice(1));
+        }}
+        onCreateNew={async (tbName, callNums) => {
+          // Create a new driver record then assign
+          const newId  = Math.max(0, ...drivers.map(d => d.id)) + 1;
+          const newDrv = { id: newId, name: tbName, truck: '', yard: YARDS[0]?.id || '' };
+          await db.upsertDriver(newDrv);
+          setDrivers(prev => [...prev, newDrv]);
+          const affected = jobs.filter(j => callNums.includes(j.tbCallNum || j.id) && !j.driverId);
+          const updated  = affected.map(j => ({ ...j, driverId: newId }));
+          await db.batchUpsertJobs(updated);
+          const byId = Object.fromEntries(updated.map(j => [j.id, j]));
+          setJobs(prev => prev.map(j => byId[j.id] || j));
+          setDriverMatchQueue(prev => prev.slice(1));
+        }}
+      />
+    )}
 
     {/* Route optimizer modal */}
     {showOptimizer && optState && (
