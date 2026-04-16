@@ -329,15 +329,19 @@ def scrape_calls():
 
         print("Logging into TowBook...")
         page.goto("https://app.towbook.com/Security/Login.aspx")
-        page.wait_for_load_state("networkidle")
+        # Wait for the login form to be present rather than networkidle —
+        # TowBook keeps persistent connections open so networkidle never fires.
+        page.wait_for_selector("#Username", timeout=20_000)
         page.evaluate(f'document.getElementById("Username").value = "{TOWBOOK_USER}"')
         page.evaluate(f'document.getElementById("Password").value = "{TOWBOOK_PASS}"')
         page.locator('button[name="bSignIn"]').click()
-        page.wait_for_load_state("networkidle")
+        # Wait for redirect away from the login page (any non-login URL)
+        page.wait_for_url(lambda url: "Login" not in url, timeout=30_000)
 
         print(f"Navigating to {DISPATCH_URL}...")
         page.goto(DISPATCH_URL)
-        page.wait_for_load_state("networkidle")
+        # Wait for load then a short settle — TowBook JS populates the tab bar async
+        page.wait_for_load_state("load", timeout=30_000)
 
         try:
             page.wait_for_selector("#atScheduled", timeout=15_000)
