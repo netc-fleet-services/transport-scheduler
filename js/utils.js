@@ -105,8 +105,10 @@ function sameZip(a, b) { return a && b && a.substring(0, 3) === b.substring(0, 3
 //   2. Fallback: haversine × 1.25 at 45 mph
 // Per-leg breakdown (m1/m2/m3, legs[]) always uses haversine since the cache
 // only stores totals. Load/unload time: 1h base + 30 min per extra stop.
-function jCalc(ya, yz, pa, pz, da, dz, stops) {
-  var yc = crd(ya, yz), pc = crd(pa, pz), dc = crd(da, dz);
+// _pc/_dc: optional pre-resolved coordinates for pickup/drop (e.g. from jobCrd()).
+// When provided they are used directly, bypassing the ZIP3/city fallback chain.
+function jCalc(ya, yz, pa, pz, da, dz, stops, _pc, _dc) {
+  var yc = crd(ya, yz), pc = _pc || crd(pa, pz), dc = _dc || crd(da, dz);
 
   if (!stops || stops.length === 0) {
     var m1 = dMi(yc, pc), m2 = dMi(pc, dc), m3 = dMi(dc, yc);
@@ -148,10 +150,12 @@ function jCalc(ya, yz, pa, pz, da, dz, stops) {
 function jobTotal(j) {
   var yd = YARDS.find(function(y) { return y.id === j.yardId; }) || YARDS[0];
   var stops = j.stops || [];
-  if (stops.length === 0) return jCalc(yd.addr, yd.zip, j.pickupAddr, j.pickupZip, j.dropAddr, j.dropZip).total;
-  var pts = [crd(yd.addr, yd.zip), crd(j.pickupAddr, j.pickupZip)];
+  var pc = jobCrd(j, 'pickup');
+  var dc = jobCrd(j, 'drop');
+  if (stops.length === 0) return jCalc(yd.addr, yd.zip, j.pickupAddr, j.pickupZip, j.dropAddr, j.dropZip, [], pc, dc).total;
+  var pts = [crd(yd.addr, yd.zip), pc];
   stops.forEach(function(s) { pts.push(crd(s.addr, s.zip)); });
-  pts.push(crd(j.dropAddr, j.dropZip), crd(yd.addr, yd.zip));
+  pts.push(dc, crd(yd.addr, yd.zip));
   var luH = Math.max(1, 0.5 * stops.length + 1);
   var gh = routeLookup(pts);
   if (gh) return gh.hours + luH;
@@ -164,13 +168,15 @@ function jobTotal(j) {
 function jobMiles(j) {
   var yd = YARDS.find(function(y) { return y.id === j.yardId; }) || YARDS[0];
   var stops = j.stops || [];
+  var pc = jobCrd(j, 'pickup');
+  var dc = jobCrd(j, 'drop');
   if (stops.length === 0) {
-    var jt = jCalc(yd.addr, yd.zip, j.pickupAddr, j.pickupZip, j.dropAddr, j.dropZip);
+    var jt = jCalc(yd.addr, yd.zip, j.pickupAddr, j.pickupZip, j.dropAddr, j.dropZip, [], pc, dc);
     return jt.totalMi;
   }
-  var pts = [crd(yd.addr, yd.zip), crd(j.pickupAddr, j.pickupZip)];
+  var pts = [crd(yd.addr, yd.zip), pc];
   stops.forEach(function(s) { pts.push(crd(s.addr, s.zip)); });
-  pts.push(crd(j.dropAddr, j.dropZip), crd(yd.addr, yd.zip));
+  pts.push(dc, crd(yd.addr, yd.zip));
   var gh = routeLookup(pts);
   if (gh) return gh.miles;
   var tm = 0;

@@ -119,19 +119,24 @@ function JobCard({ job, drivers, onUpdate, onRemove, onDayChange }) {
   const stops = job.stops || [];
 
   // Build full point list: Yard → Pickup → Stops → Drop → Yard
+  // Pickup and drop carry stored lat/lon from the DB (populated by sync script)
+  // so ptCrd() uses street-accurate coordinates instead of falling back to ZIP3.
   const allPts = [];
   allPts.push({ label: yard.short + " (yard)",   addr: yard.addr, zip: yard.zip, color: C.dm });
-  allPts.push({ label: "Pickup",                  addr: job.pickupAddr, zip: job.pickupZip, color: C.ac });
+  allPts.push({ label: "Pickup",  addr: job.pickupAddr, zip: job.pickupZip, lat: job.pickupLat, lon: job.pickupLon, color: C.ac });
   stops.forEach((s, i) => allPts.push({ label: s.name || ("Stop " + (i + 1)), addr: s.addr || "", zip: s.zip || "", color: C.am }));
-  allPts.push({ label: "Drop",                    addr: job.dropAddr, zip: job.dropZip, color: C.gn });
+  allPts.push({ label: "Drop",    addr: job.dropAddr,   zip: job.dropZip,   lat: job.dropLat,   lon: job.dropLon,  color: C.gn });
   allPts.push({ label: yard.short + " (return)",  addr: yard.addr, zip: yard.zip, color: C.dm });
+
+  // Resolve coordinates: prefer stored lat/lon, fall back to crd() (ZIP3/city lookup)
+  const ptCrd = (pt) => (pt.lat != null && pt.lon != null) ? { lat: pt.lat, lon: pt.lon } : crd(pt.addr, pt.zip);
 
   // Calculate each leg (haversine — for per-leg display only)
   const legs = []; let havMi = 0;
   const ptCoords = [];
   for (let i = 0; i < allPts.length - 1; i++) {
-    const c1 = crd(allPts[i].addr, allPts[i].zip);
-    const c2 = crd(allPts[i + 1].addr, allPts[i + 1].zip);
+    const c1 = ptCrd(allPts[i]);
+    const c2 = ptCrd(allPts[i + 1]);
     if (i === 0 && c1) ptCoords.push(c1);
     if (c2) ptCoords.push(c2);
     const mi = dMi(c1, c2);
@@ -166,7 +171,7 @@ function JobCard({ job, drivers, onUpdate, onRemove, onDayChange }) {
   // (not just toll routes where onUpdate fires naturally).
   useEffect(() => {
     if (typeof ghRoute !== 'function') return;
-    const ptsCoords = allPts.map(p => crd(p.addr, p.zip)).filter(Boolean);
+    const ptsCoords = allPts.map(p => ptCrd(p)).filter(Boolean);
     if (ptsCoords.length < 2) return;
     let cancelled = false;
     ghRoute(ptsCoords).then(r => {

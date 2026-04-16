@@ -9,6 +9,7 @@
 #   TOWBOOK_PASS        — TowBook login password
 #   SUPABASE_URL        — from Supabase Dashboard → Settings → API
 #   SUPABASE_SERVICE_KEY — service role key (bypasses RLS) — NOT the anon key
+#   GEOCODIO_KEY        — from geocod.io dashboard (optional — improves address quality)
 # ═══════════════════════════════════════════════
 
 name: Sync TowBook Calls
@@ -60,4 +61,5 @@ jobs:
           TOWBOOK_PASS:        ${{ secrets.TOWBOOK_PASS }}
           SUPABASE_URL:        ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          GEOCODIO_KEY:        ${{ secrets.GEOCODIO_KEY }}
         run: python scripts/sync_calls.py

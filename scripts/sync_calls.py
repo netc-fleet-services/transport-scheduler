@@ -24,6 +24,7 @@ TOWBOOK_USER     = os.environ["TOWBOOK_USER"]
 TOWBOOK_PASS     = os.environ["TOWBOOK_PASS"]
 SUPABASE_URL     = os.environ["SUPABASE_URL"]
 SUPABASE_KEY     = os.environ["SUPABASE_SERVICE_KEY"]   # service role key — bypasses RLS
+GEOCODIO_KEY     = os.environ.get("GEOCODIO_KEY", "")   # optional — improves address quality
 
 # TowBook dispatch page. All call categories are shown on the same URL;
 # the tab filter is applied via JavaScript without a URL change.
@@ -82,6 +83,92 @@ def sched_to_day(sched):
         except ValueError:
             continue
     return date.today().isoformat()
+
+# ── Address Standardization (geocod.io) ───────────────────────────────────────
+# Called before Nominatim for proper street addresses. Returns a USPS-standardized
+# address string + rooftop-accurate lat/lon, or (None, None, None) so the caller
+# falls through to Nominatim unchanged.
+#
+# Safety gates — all must pass before the standardized result is accepted:
+#   1. Address starts with a street number (skips highway/road references)
+#   2. geocod.io confidence ≥ 0.8 and type is rooftop/interpolated/point
+#   3. Street number in response matches street number in original input
+#   4. ZIP3 prefix matches (same county-level region — blocks cross-state misfires)
+
+def standardize_addr(raw):
+    if not GEOCODIO_KEY or not raw:
+        return None, None, None
+
+    # Skip highway/road references — geocod.io won't have mile markers
+    if _ROAD_PREFIX.match(raw.strip()):
+        return None, None, None
+
+    # Must start with a street number to be worth standardizing
+    if not re.match(r'^\d+\s', raw.strip()):
+        return None, None, None
+
+    try:
+        url = "https://api.geocod.io/v1.7/geocode?" + urllib.parse.urlencode({
+            "q": raw, "api_key": GEOCODIO_KEY, "limit": 1,
+        })
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "transport-scheduler-sync/1.0 (ops@netruckcenter.com)",
+        })
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+
+        results = data.get("results") or []
+        if not results:
+            return None, None, None
+
+        r        = results[0]
+        acc      = r.get("accuracy", 0)
+        acc_type = r.get("accuracy_type", "")
+        comp     = r.get("address_components", {})
+        loc      = r.get("location", {})
+
+        # Require rooftop or street-level accuracy
+        if acc < 0.8 or acc_type not in ("rooftop", "range_interpolation", "point"):
+            return None, None, None
+
+        # Street number must match — prevents 123 Main → 321 Main substitution
+        orig_num = (re.match(r'^(\d+)', raw.strip()) or [None, ''])[1]
+        std_num  = str(comp.get("number", ""))
+        if orig_num and std_num and orig_num != std_num:
+            print(f"  geocodio: number mismatch {orig_num!r}→{std_num!r}, skipping for {raw!r}")
+            return None, None, None
+
+        # ZIP3 region check — blocks cross-state wrong matches
+        orig_zip = extract_zip(raw)
+        std_zip  = str(comp.get("zip", ""))
+        if orig_zip and std_zip and orig_zip[:3] != std_zip[:3]:
+            print(f"  geocodio: ZIP region mismatch {orig_zip}→{std_zip}, skipping for {raw!r}")
+            return None, None, None
+
+        lat = loc.get("lat")
+        lon = loc.get("lng")
+        if lat is None or lon is None:
+            return None, None, None
+
+        # Build clean standardized address string
+        parts = [comp.get("number", ""),
+                 comp.get("predirectional", ""),
+                 comp.get("street", ""),
+                 comp.get("suffix", ""),
+                 comp.get("postdirectional", "")]
+        street_line = " ".join(p for p in parts if p)
+        city  = comp.get("city", "")
+        state = comp.get("state", "")
+        zipcode = comp.get("zip", "")
+        std_addr = f"{street_line}, {city} {state} {zipcode}".strip().rstrip(",")
+
+        print(f"  geocodio: {raw!r} → {std_addr!r} ({lat:.5f}, {lon:.5f})")
+        return std_addr, float(lat), float(lon)
+
+    except Exception as e:
+        print(f"  geocodio fail for {raw!r}: {e}")
+        return None, None, None
+
 
 # ── Geocoding (Nominatim / OpenStreetMap) ──────────────────────────────────────
 # Free, 1 req/sec limit per their TOS. Requires a descriptive User-Agent.
@@ -298,17 +385,32 @@ def sync_to_supabase(tb_calls):
             """Use the scraped value if non-empty, otherwise keep what's already in Supabase."""
             return new_val if new_val else (ex.get(field) if ex else new_val)
 
-        # Geocode pickup/drop — reuse stored coords if the address hasn't changed.
+        # Geocode pickup/drop.
+        # Priority: reuse stored coords (address unchanged) → geocod.io → Nominatim.
+        # geocod.io may also return a cleaner standardized address string; if it does
+        # we update call["pickup"]/call["drop"] so the improved address is stored too.
         p_addr = call["pickup"]
         d_addr = call["drop"]
+
         if ex and ex.get("pickup_addr") == p_addr and ex.get("pickup_lat") is not None:
             p_lat, p_lon = ex.get("pickup_lat"), ex.get("pickup_lon")
         else:
-            p_lat, p_lon = geocode(p_addr) if p_addr else (None, None)
+            std_p, p_lat, p_lon = standardize_addr(p_addr)
+            if std_p:
+                call["pickup"]     = std_p
+                call["pickup_zip"] = extract_zip(std_p)
+            elif p_addr:
+                p_lat, p_lon = geocode(p_addr)
+
         if ex and ex.get("drop_addr") == d_addr and ex.get("drop_lat") is not None:
             d_lat, d_lon = ex.get("drop_lat"), ex.get("drop_lon")
         else:
-            d_lat, d_lon = geocode(d_addr) if d_addr else (None, None)
+            std_d, d_lat, d_lon = standardize_addr(d_addr)
+            if std_d:
+                call["drop"]     = std_d
+                call["drop_zip"] = extract_zip(std_d)
+            elif d_addr:
+                d_lat, d_lon = geocode(d_addr)
 
         row = {
             "tb_call_num":  cn,
