@@ -39,21 +39,17 @@ jobs:
 
       # Cache the Playwright browser binary so we don't re-download Chromium
       # on every run (saves ~30s and reduces bandwidth).
+      # System deps (apt packages) are always installed via --with-deps regardless
+      # of cache state — splitting into two steps caused apt-get hangs on cache hits.
       - name: Cache Playwright browsers
-        id: pw-cache
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-${{ runner.os }}-${{ hashFiles('**/requirements*.txt') }}
           restore-keys: playwright-chromium-${{ runner.os }}-
 
-      - name: Install Playwright browsers
-        if: steps.pw-cache.outputs.cache-hit != 'true'
+      - name: Install Playwright browsers and system deps
         run: python -m playwright install chromium --with-deps
-
-      - name: Install Playwright system deps (cached hit)
-        if: steps.pw-cache.outputs.cache-hit == 'true'
-        run: python -m playwright install-deps chromium
 
       - name: Run sync
         env:
