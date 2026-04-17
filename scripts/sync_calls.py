@@ -10,6 +10,9 @@ Sync logic:
 Scrapes three tabs in precedence order: Scheduled → Current → Active.
 If the same call number appears in multiple tabs, the higher-precedence tab wins.
 Active has final authority since it reflects the most current in-progress state.
+
+Completion detection: any job that is status="active" in the DB but no longer
+appears in any scraped tab is assumed to have completed and is marked "complete".
 """
 
 import os, re, uuid, time, json
@@ -249,10 +252,9 @@ def geocode(addr):
 # Tabs to scrape, in ascending precedence order — later tabs overwrite earlier
 # ones when the same call number appears in multiple tabs.
 TABS = [
-    ("Scheduled",  "#atScheduled"),
-    ("Current",    "#atCurrent"),
-    ("Active",     "#atActive"),
-    ("Completed",  "#atCompleted"),  # highest precedence — overwrites active if job is done
+    ("Scheduled", "#atScheduled"),
+    ("Current",   "#atCurrent"),
+    ("Active",    "#atActive"),
 ]
 
 def scrape_tab(page, tab_id, tab_name):
@@ -267,25 +269,6 @@ def scrape_tab(page, tab_id, tab_name):
 
     page.wait_for_timeout(1_500)
 
-    # Completed tab lazy-loads rows as you scroll. Scroll the entry list
-    # container repeatedly until no new rows appear (max 10 passes).
-    if tab_name == "Completed":
-        for pass_num in range(20):
-            prev = page.locator("li.entryRow").count()
-            page.evaluate("""
-                const el = document.getElementById('dcslist')
-                        || document.querySelector('.entriesTable')
-                        || document.querySelector('li.entryRow')?.parentElement
-                        || document.body;
-                el.scrollTop = el.scrollHeight;
-                window.scrollTo(0, document.body.scrollHeight);
-            """)
-            page.wait_for_timeout(1_200)
-            curr = page.locator("li.entryRow").count()
-            print(f"  Completed scroll pass {pass_num + 1}: {prev} → {curr} rows")
-            if curr == prev:
-                break
-        print(f"  Scrolled Completed tab — {page.locator('li.entryRow').count()} total rows loaded")
 
     all_rows = page.locator("li.entryRow").all()
     rows = [r for r in all_rows if r.is_visible()]
@@ -447,13 +430,6 @@ def sync_to_supabase(tb_calls):
     upd_count = 0
     complete_count = 0
 
-    # Print all call numbers from Completed tab so we can verify they match DB values
-    completed_calls = [c for c in tb_calls if c.get("source_tab") == "Completed"]
-    print(f"  Completed tab call nums: {[c['call_num'] for c in completed_calls]}")
-    for c in completed_calls:
-        match = existing.get(c["call_num"])
-        print(f"    {c['call_num']}: DB match={'YES (status='+match['status']+')' if match else 'NO — will insert new'}")
-
     for call in tb_calls:
         cn = call["call_num"]
         ex = existing.get(cn)
@@ -512,14 +488,7 @@ def sync_to_supabase(tb_calls):
 
         # Determine status from source tab. Completed has highest authority,
         # then Active, then existing DB status, then default to scheduled.
-        src          = call.get("source_tab")
-        is_complete  = src == "Completed"
-        is_active    = src == "Active"
-
-        # Skip completed calls that are already marked complete in the DB —
-        # we only care about the active/scheduled → complete transition.
-        if is_complete and ex and ex.get("status") == "complete":
-            continue
+        is_active = call.get("source_tab") == "Active"
 
         if ex:
             # Existing record — carry forward all dispatcher-managed fields
@@ -531,40 +500,40 @@ def sync_to_supabase(tb_calls):
             row["priority"]    = ex["priority"]
             row["notes"]       = ex.get("notes")
             row["stops"]       = ex.get("stops") or []
-            if is_complete:
-                row["status"] = "complete"
-                if ex.get("status") != "complete":
-                    complete_count += 1
-                    print(f"  → Transitioning {cn} to complete (was {ex.get('status')})")
-            elif is_active:
-                row["status"] = "active"
-            else:
-                row["status"] = ex["status"]
+            row["status"]      = "active" if is_active else ex["status"]
+            updates.append(row)
+            upd_count += 1
         else:
             # New call — set defaults
             row["id"]       = str(uuid.uuid4())
             row["priority"] = "normal"
             row["stops"]    = []
             row["added_at"] = now
-            row["status"]   = "complete" if is_complete else ("active" if is_active else "scheduled")
-
-        if ex:
-            updates.append(row)
-            upd_count += 1
-        else:
+            row["status"]   = "active" if is_active else "scheduled"
             inserts.append(row)
             new_count += 1
+
+    # Any job that was active in the DB but is no longer in the dispatch
+    # (Scheduled, Current, or Active tabs) has been completed.
+    scraped_nums = {call["call_num"] for call in tb_calls}
+    vanished = [
+        ex for ex in existing.values()
+        if ex.get("status") == "active" and ex.get("tb_call_num") not in scraped_nums
+    ]
+    if vanished:
+        ids = [ex["id"] for ex in vanished]
+        sb.from_("jobs").update({"status": "complete", "updated_at": now}).in_("id", ids).execute()
+        complete_count = len(vanished)
+        for ex in vanished:
+            print(f"  → {ex['tb_call_num']} left dispatch — marked complete (day {ex.get('day')})")
 
     if inserts:
         sb.from_("jobs").insert(inserts).execute()
     if updates:
-        # Update existing records individually by id — avoids on_conflict ambiguity
-        # when both primary key (id) and unique key (tb_call_num) are present.
         BATCH = 50
         for i in range(0, len(updates), BATCH):
-            batch = updates[i:i + BATCH]
-            sb.from_("jobs").upsert(batch, on_conflict="id").execute()
-    if inserts or updates:
+            sb.from_("jobs").upsert(updates[i:i + BATCH], on_conflict="id").execute()
+    if inserts or updates or vanished:
         print(f"  Inserted {new_count} new jobs, updated {upd_count} existing jobs, {complete_count} transitioned to complete")
     else:
         print("  No calls to sync.")
