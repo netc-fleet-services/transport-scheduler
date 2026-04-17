@@ -349,7 +349,9 @@ def scrape_tab(page, tab_id, tab_name):
         if len(driver_parts) > 1:
             print(f"  Split drivers for {call_num}: {driver_parts}")
 
-        if pickup or drop:
+        # For Completed tab, include the row even if addresses are empty —
+        # sync will carry forward existing pickup/drop from the DB.
+        if pickup or drop or tab_name == "Completed":
             calls.append({
                 'call_num':   call_num,
                 'desc':       desc,
@@ -438,6 +440,16 @@ def sync_to_supabase(tb_calls):
     existing = {r["tb_call_num"]: r for r in (resp.data or []) if r.get("tb_call_num")}
 
     upserts = []
+    new_count = 0
+    upd_count = 0
+    complete_count = 0
+
+    # Print all call numbers from Completed tab so we can verify they match DB values
+    completed_calls = [c for c in tb_calls if c.get("source_tab") == "Completed"]
+    print(f"  Completed tab call nums: {[c['call_num'] for c in completed_calls]}")
+    for c in completed_calls:
+        match = existing.get(c["call_num"])
+        print(f"    {c['call_num']}: DB match={'YES (status='+match['status']+')' if match else 'NO — will insert new'}")
 
     for call in tb_calls:
         cn = call["call_num"]
@@ -518,6 +530,9 @@ def sync_to_supabase(tb_calls):
             row["stops"]       = ex.get("stops") or []
             if is_complete:
                 row["status"] = "complete"
+                if ex.get("status") != "complete":
+                    complete_count += 1
+                    print(f"  → Transitioning {cn} to complete (was {ex.get('status')})")
             elif is_active:
                 row["status"] = "active"
             else:
@@ -531,12 +546,14 @@ def sync_to_supabase(tb_calls):
             row["status"]   = "complete" if is_complete else ("active" if is_active else "scheduled")
 
         upserts.append(row)
+        if ex:
+            upd_count += 1
+        else:
+            new_count += 1
 
     if upserts:
         sb.from_("jobs").upsert(upserts, on_conflict="tb_call_num").execute()
-        new_count = len([u for u in upserts if "added_at" in u])
-        upd_count = len(upserts) - new_count
-        print(f"  Inserted {new_count} new jobs, updated {upd_count} existing jobs")
+        print(f"  Inserted {new_count} new jobs, updated {upd_count} existing jobs, {complete_count} transitioned to complete")
     else:
         print("  No calls to sync.")
 
