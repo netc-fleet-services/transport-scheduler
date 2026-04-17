@@ -267,6 +267,24 @@ def scrape_tab(page, tab_id, tab_name):
 
     page.wait_for_timeout(1_500)
 
+    # Completed tab lazy-loads rows as you scroll. Scroll the entry list
+    # container repeatedly until no new rows appear (max 10 passes).
+    if tab_name == "Completed":
+        for _ in range(10):
+            prev = page.locator("li.entryRow").count()
+            page.evaluate("""
+                const el = document.querySelector('.entryListContainer, .dispatch-list, #entryList, .entryList')
+                        || document.querySelector('[class*="entryList"], [id*="entryList"]')
+                        || document.body;
+                el.scrollTop = el.scrollHeight;
+                window.scrollTo(0, document.body.scrollHeight);
+            """)
+            page.wait_for_timeout(800)
+            curr = page.locator("li.entryRow").count()
+            if curr == prev:
+                break
+        print(f"  Scrolled Completed tab — {page.locator('li.entryRow').count()} total rows loaded")
+
     all_rows = page.locator("li.entryRow").all()
     rows = [r for r in all_rows if r.is_visible()]
     print(f"  Found {len(rows)} rows in {tab_name} tab")
@@ -392,6 +410,7 @@ def scrape_calls():
         for tab_name, tab_id in TABS:
             try:
                 tab_calls = scrape_tab(page, tab_id, tab_name)
+                print(f"  {tab_name}: {len(tab_calls)} calls parsed (of visible rows above)")
                 for call in tab_calls:
                     merged[call["call_num"]] = call
             except Exception as e:
@@ -481,6 +500,11 @@ def sync_to_supabase(tb_calls):
         src          = call.get("source_tab")
         is_complete  = src == "Completed"
         is_active    = src == "Active"
+
+        # Skip completed calls that are already marked complete in the DB —
+        # we only care about the active/scheduled → complete transition.
+        if is_complete and ex and ex.get("status") == "complete":
+            continue
 
         if ex:
             # Existing record — carry forward all dispatcher-managed fields
