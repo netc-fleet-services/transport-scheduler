@@ -249,9 +249,10 @@ def geocode(addr):
 # Tabs to scrape, in ascending precedence order — later tabs overwrite earlier
 # ones when the same call number appears in multiple tabs.
 TABS = [
-    ("Scheduled", "#atScheduled"),
-    ("Current",   "#atCurrent"),
-    ("Active",    "#atActive"),
+    ("Scheduled",  "#atScheduled"),
+    ("Current",    "#atCurrent"),
+    ("Active",     "#atActive"),
+    ("Completed",  "#atCompleted"),  # highest precedence — overwrites active if job is done
 ]
 
 def scrape_tab(page, tab_id, tab_name):
@@ -475,28 +476,35 @@ def sync_to_supabase(tb_calls):
             "updated_at":   now,
         }
 
-        # Jobs from the Active tab are in-progress in TowBook — mark them active.
-        # Scheduled and Current tabs preserve existing status (or default to scheduled).
-        is_active = call.get("source_tab") == "Active"
+        # Determine status from source tab. Completed has highest authority,
+        # then Active, then existing DB status, then default to scheduled.
+        src          = call.get("source_tab")
+        is_complete  = src == "Completed"
+        is_active    = src == "Active"
 
         if ex:
             # Existing record — carry forward all dispatcher-managed fields
-            row["id"]        = ex["id"]
-            row["added_at"]  = ex["added_at"]
-            row["yard_id"]    = ex["yard_id"]
-            row["driver_id"]  = ex["driver_id"]
+            row["id"]          = ex["id"]
+            row["added_at"]    = ex["added_at"]
+            row["yard_id"]     = ex["yard_id"]
+            row["driver_id"]   = ex["driver_id"]
             row["driver_id_2"] = ex.get("driver_id_2")
-            row["status"]    = "active" if is_active else ex["status"]
-            row["priority"]  = ex["priority"]
-            row["notes"]     = ex.get("notes")
-            row["stops"]     = ex.get("stops") or []
+            row["priority"]    = ex["priority"]
+            row["notes"]       = ex.get("notes")
+            row["stops"]       = ex.get("stops") or []
+            if is_complete:
+                row["status"] = "complete"
+            elif is_active:
+                row["status"] = "active"
+            else:
+                row["status"] = ex["status"]
         else:
             # New call — set defaults
             row["id"]       = str(uuid.uuid4())
             row["priority"] = "normal"
-            row["status"]   = "active" if is_active else "scheduled"
             row["stops"]    = []
             row["added_at"] = now
+            row["status"]   = "complete" if is_complete else ("active" if is_active else "scheduled")
 
         upserts.append(row)
 
