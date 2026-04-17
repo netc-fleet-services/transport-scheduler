@@ -441,7 +441,8 @@ def sync_to_supabase(tb_calls):
 
     existing = {r["tb_call_num"]: r for r in (resp.data or []) if r.get("tb_call_num")}
 
-    upserts = []
+    inserts = []
+    updates = []
     new_count = 0
     upd_count = 0
     complete_count = 0
@@ -547,14 +548,23 @@ def sync_to_supabase(tb_calls):
             row["added_at"] = now
             row["status"]   = "complete" if is_complete else ("active" if is_active else "scheduled")
 
-        upserts.append(row)
         if ex:
+            updates.append(row)
             upd_count += 1
         else:
+            inserts.append(row)
             new_count += 1
 
-    if upserts:
-        sb.from_("jobs").upsert(upserts, on_conflict="tb_call_num").execute()
+    if inserts:
+        sb.from_("jobs").insert(inserts).execute()
+    if updates:
+        # Update existing records individually by id — avoids on_conflict ambiguity
+        # when both primary key (id) and unique key (tb_call_num) are present.
+        BATCH = 50
+        for i in range(0, len(updates), BATCH):
+            batch = updates[i:i + BATCH]
+            sb.from_("jobs").upsert(batch, on_conflict="id").execute()
+    if inserts or updates:
         print(f"  Inserted {new_count} new jobs, updated {upd_count} existing jobs, {complete_count} transitioned to complete")
     else:
         print("  No calls to sync.")
