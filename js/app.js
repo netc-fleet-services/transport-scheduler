@@ -1477,6 +1477,7 @@ function App() {
   const [showStacking,   setShowStacking]   = useState(false);
   const [stackRadius,    setStackRadius]    = useState(15);
   const [ignoredStacks,  setIgnoredStacks]  = useState(() => new Set());
+  const [calExpanded,    setCalExpanded]    = useState(false);
 
   // Refs so Realtime callbacks (which close over initial state) always see current values
   const jobsRef          = React.useRef([]);
@@ -1927,6 +1928,13 @@ function App() {
     jobs.forEach(j => { if (j.day) base.add(j.day); });
     return [...base].sort();
   }, [jobs]);
+
+  // Collapsed view: today through 7 days out, always including the selected day.
+  const calWeekEnd  = useMemo(() => { const d = new Date(); d.setDate(d.getDate() + 6); return isoD(d); }, []);
+  const visCalDays  = useMemo(() => {
+    if (calExpanded) return calDays;
+    return calDays.filter(iso => (iso >= todayISO() && iso <= calWeekEnd) || iso === viewDay);
+  }, [calDays, calExpanded, calWeekEnd, viewDay]);
   const filt      = (arr) => {
     let out = reasonFilter.has("ALL") ? arr : arr.filter(j => reasonFilter.has(j.tbReason || ""));
     if (!locationFilter.has("ALL")) out = out.filter(j => locationFilter.has(locLabel(j.tbCallNum)));
@@ -2056,7 +2064,7 @@ function App() {
 
     {/* Calendar strip */}
     {(tab === "schedule" || tab === "drivers") && <div className="cal">
-      {calDays.map(iso => {
+      {visCalDays.map(iso => {
         const st  = daySt(iso);
         const sel = iso === viewDay;
         const col = st.n === 0 ? C.dm : st.pct >= 90 ? C.rd : st.pct >= 75 ? C.am : C.gn;
@@ -2082,6 +2090,14 @@ function App() {
           </div>
         </div>;
       })}
+      <div
+        onClick={() => setCalExpanded(v => !v)}
+        style={{ minWidth: 36, flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", cursor: "pointer", borderRadius: 8, border: "2px dashed " + C.bd, color: C.dm, fontSize: 16, gap: 2, padding: "9px 6px" }}
+        title={calExpanded ? "Show less" : "Show all dates"}
+      >
+        <span>{calExpanded ? "‹" : "›"}</span>
+        <span style={{ fontSize: 7, fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase" }}>{calExpanded ? "Less" : "More"}</span>
+      </div>
     </div>}
 
     {/* ═══ SCHEDULE TAB ═══ */}
